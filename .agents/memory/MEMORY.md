@@ -1,0 +1,1 @@
+- [Discord bot operations](discord-bot-operations.md) — user OAuth is for discovery; channel and moderation actions require a secret bot token plus matching Gateway intents.

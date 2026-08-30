@@ -10,6 +10,10 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: discord
+    description: Discord server and moderation operations
+  - name: storage
+    description: Persistent media uploads
 paths:
   /healthz:
     get:
@@ -24,7 +28,194 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /discord/guilds:
+    get:
+      operationId: listDiscordGuilds
+      tags: [discord]
+      summary: List servers available to the bot
+      responses:
+        "200":
+          description: Discord servers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DiscordGuild"
+  /discord/guilds/{guildId}/summary:
+    get:
+      operationId: getDiscordGuildSummary
+      tags: [discord]
+      summary: Get a server summary
+      parameters:
+        - $ref: "#/components/parameters/GuildId"
+      responses:
+        "200":
+          description: Server summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GuildSummary"
+  /discord/guilds/{guildId}/config:
+    get:
+      operationId: getGuildConfig
+      tags: [discord]
+      summary: Get moderation configuration
+      parameters:
+        - $ref: "#/components/parameters/GuildId"
+      responses:
+        "200":
+          description: Moderation configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GuildConfig"
+    put:
+      operationId: updateGuildConfig
+      tags: [discord]
+      summary: Update moderation configuration
+      parameters:
+        - $ref: "#/components/parameters/GuildId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GuildConfigInput"
+      responses:
+        "200":
+          description: Updated moderation configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GuildConfig"
+  /discord/guilds/{guildId}/templates:
+    get:
+      operationId: listGuildTemplates
+      tags: [discord]
+      summary: List reusable embed templates
+      parameters:
+        - $ref: "#/components/parameters/GuildId"
+      responses:
+        "200":
+          description: Embed templates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EmbedTemplate"
+  /discord/guilds/{guildId}/templates/{templateKey}:
+    put:
+      operationId: updateGuildTemplate
+      tags: [discord]
+      summary: Save a reusable embed template
+      parameters:
+        - $ref: "#/components/parameters/GuildId"
+        - $ref: "#/components/parameters/TemplateKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmbedTemplateInput"
+      responses:
+        "200":
+          description: Updated template
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbedTemplate"
+  /discord/guilds/{guildId}/templates/{templateKey}/send:
+    post:
+      operationId: sendGuildTemplate
+      tags: [discord]
+      summary: Send a saved embed to a channel
+      parameters:
+        - $ref: "#/components/parameters/GuildId"
+        - $ref: "#/components/parameters/TemplateKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendTemplateInput"
+      responses:
+        "200":
+          description: Discord message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscordMessage"
+  /discord/guilds/{guildId}/moderation/actions:
+    post:
+      operationId: executeModerationAction
+      tags: [discord]
+      summary: Execute a moderation action
+      parameters:
+        - $ref: "#/components/parameters/GuildId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModerationActionInput"
+      responses:
+        "200":
+          description: Moderation result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModerationResult"
+  /discord/guilds/{guildId}/audit:
+    get:
+      operationId: listGuildAuditEvents
+      tags: [discord]
+      summary: List recent bot actions
+      parameters:
+        - $ref: "#/components/parameters/GuildId"
+      responses:
+        "200":
+          description: Audit events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditEvent"
+  /storage/uploads/request-url:
+    post:
+      operationId: requestUploadUrl
+      tags: [storage]
+      summary: Request a presigned upload URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UploadRequest"
+      responses:
+        "200":
+          description: Presigned upload URL
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadResponse"
 components:
+  parameters:
+    GuildId:
+      name: guildId
+      in: path
+      required: true
+      schema:
+        type: string
+    TemplateKey:
+      name: templateKey
+      in: path
+      required: true
+      schema:
+        type: string
+        enum: [welcome, rules, announcement, ticket, antinuke]
   schemas:
     HealthStatus:
       type: object
@@ -33,4 +224,169 @@ components:
           type: string
       required:
         - status
+    DiscordGuild:
+      type: object
+      required: [id, name, memberCount, icon]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        memberCount: { type: number }
+        icon: { type: ["string", "null"] }
+    GuildSummary:
+      type: object
+      required: [guild, channelCount, roleCount, enabledModules, recentActions]
+      properties:
+        guild: { $ref: "#/components/schemas/DiscordGuild" }
+        channelCount: { type: number }
+        roleCount: { type: number }
+        enabledModules:
+          type: array
+          items: { type: string }
+        recentActions:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEvent" }
+    GuildConfig:
+      type: object
+      required:
+        [guildId, moderation, welcome, tickets, antiNuke, updatedAt]
+      properties:
+        guildId: { type: string }
+        moderation: { $ref: "#/components/schemas/ModerationConfig" }
+        welcome: { $ref: "#/components/schemas/WelcomeConfig" }
+        tickets: { $ref: "#/components/schemas/TicketConfig" }
+        antiNuke: { $ref: "#/components/schemas/AntiNukeConfig" }
+        updatedAt: { type: string }
+    GuildConfigInput:
+      type: object
+      required: [moderation, welcome, tickets, antiNuke]
+      properties:
+        moderation: { $ref: "#/components/schemas/ModerationConfig" }
+        welcome: { $ref: "#/components/schemas/WelcomeConfig" }
+        tickets: { $ref: "#/components/schemas/TicketConfig" }
+        antiNuke: { $ref: "#/components/schemas/AntiNukeConfig" }
+    ModerationConfig:
+      type: object
+      required: [logChannelId, mutedRoleId, defaultTimeoutHours, dmUsers]
+      properties:
+        logChannelId: { type: ["string", "null"] }
+        mutedRoleId: { type: ["string", "null"] }
+        defaultTimeoutHours: { type: number, minimum: 1 }
+        dmUsers: { type: boolean }
+        deleteCommandMessages: { type: boolean }
+    WelcomeConfig:
+      type: object
+      required: [enabled, channelId, message, imagePath, showMemberCount]
+      properties:
+        enabled: { type: boolean }
+        channelId: { type: ["string", "null"] }
+        message: { type: string }
+        imagePath: { type: ["string", "null"] }
+        imageName: { type: ["string", "null"] }
+        showMemberCount: { type: boolean }
+    TicketConfig:
+      type: object
+      required: [enabled, categoryId, supportRoleId, transcriptChannelId]
+      properties:
+        enabled: { type: boolean }
+        categoryId: { type: ["string", "null"] }
+        supportRoleId: { type: ["string", "null"] }
+        transcriptChannelId: { type: ["string", "null"] }
+    AntiNukeConfig:
+      type: object
+      required:
+        [enabled, baitChannelId, firstTimeoutHours, secondTimeoutDays, mutedRoleId, purgeRecentMessages, dmReason]
+      properties:
+        enabled: { type: boolean }
+        baitChannelId: { type: ["string", "null"] }
+        firstTimeoutHours: { type: number, minimum: 1 }
+        secondTimeoutDays: { type: number, minimum: 1 }
+        mutedRoleId: { type: ["string", "null"] }
+        purgeRecentMessages: { type: boolean }
+        dmReason: { type: boolean }
+    EmbedTemplate:
+      type: object
+      required: [guildId, key, name, description, color, content, fields, footer, enabled]
+      properties:
+        guildId: { type: string }
+        key: { type: string }
+        name: { type: string }
+        description: { type: string }
+        color: { type: string }
+        content: { type: string }
+        fields:
+          type: array
+          items: { $ref: "#/components/schemas/EmbedField" }
+        footer: { type: string }
+        enabled: { type: boolean }
+    EmbedTemplateInput:
+      type: object
+      required: [name, description, color, content, fields, footer, enabled]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        color: { type: string }
+        content: { type: string }
+        fields:
+          type: array
+          items: { $ref: "#/components/schemas/EmbedField" }
+        footer: { type: string }
+        enabled: { type: boolean }
+    EmbedField:
+      type: object
+      required: [name, value, inline]
+      properties:
+        name: { type: string }
+        value: { type: string }
+        inline: { type: boolean }
+    SendTemplateInput:
+      type: object
+      required: [channelId]
+      properties:
+        channelId: { type: string }
+    DiscordMessage:
+      type: object
+      required: [id, channelId]
+      properties:
+        id: { type: string }
+        channelId: { type: string }
+    ModerationActionInput:
+      type: object
+      required: [action, userId]
+      properties:
+        action:
+          type: string
+          enum: [ban, kick, timeout, untimeout, mute, unmute]
+        userId: { type: string }
+        reason: { type: string }
+        durationMinutes: { type: ["number", "null"] }
+    ModerationResult:
+      type: object
+      required: [success, action, userId]
+      properties:
+        success: { type: boolean }
+        action: { type: string }
+        userId: { type: string }
+        message: { type: string }
+    AuditEvent:
+      type: object
+      required: [id, action, subject, createdAt]
+      properties:
+        id: { type: string }
+        action: { type: string }
+        subject: { type: string }
+        actor: { type: ["string", "null"] }
+        createdAt: { type: string }
+    UploadRequest:
+      type: object
+      required: [name, size, contentType]
+      properties:
+        name: { type: string }
+        size: { type: number, minimum: 1 }
+        contentType: { type: string }
+    UploadResponse:
+      type: object
+      required: [uploadURL, objectPath]
+      properties:
+        uploadURL: { type: string }
+        objectPath: { type: string }
 

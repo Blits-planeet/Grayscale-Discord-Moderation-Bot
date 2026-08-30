@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Moderation Panel"
+description = "A grayscale Discord moderation control panel for configuring server safety, moderation actions, welcome messages, ticketing, announcements, rules, and reusable embeds."
+version = "1.0.0"
+id = "artifacts/moderation-panel"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18459
+
+[services.development]
+run = "pnpm --filter @workspace/moderation-panel run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/moderation-panel", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/moderation-panel/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18459"
+BASE_PATH = "/"
