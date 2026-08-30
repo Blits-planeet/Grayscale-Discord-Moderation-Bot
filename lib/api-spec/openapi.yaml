@@ -266,10 +266,11 @@ components:
         antiNuke: { $ref: "#/components/schemas/AntiNukeConfig" }
     ModerationConfig:
       type: object
-      required: [logChannelId, mutedRoleId, defaultTimeoutHours, dmUsers]
+      required: [logChannelId, mutedRoleId, memberRoleId, defaultTimeoutHours, dmUsers]
       properties:
         logChannelId: { type: ["string", "null"] }
         mutedRoleId: { type: ["string", "null"] }
+        memberRoleId: { type: ["string", "null"] }
         defaultTimeoutHours: { type: number, minimum: 1 }
         dmUsers: { type: boolean }
         deleteCommandMessages: { type: boolean }

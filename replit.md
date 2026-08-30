@@ -1,6 +1,6 @@
-# Sentinel/Ctrl Moderation Panel
+# CredX Discord Moderation Bot
 
-Sentinel/Ctrl is a grayscale Discord moderation control panel with persistent server safety settings, reusable embeds, moderation actions, welcome media, ticket configuration, and an anti-nuke gateway listener.
+CredX is a Discord-first moderation bot. Its primary interface is the `/panel` command inside Discord; the existing web artifact is only an optional configuration surface.
 
 ## Run & Operate
 
@@ -25,7 +25,7 @@ Sentinel/Ctrl is a grayscale Discord moderation control panel with persistent se
 
 ## Where things live
 
-- `artifacts/moderation-panel/src/` — routed control-panel UI and grayscale theme
+- `artifacts/moderation-panel/src/` — optional routed configuration UI and grayscale theme
 - `artifacts/api-server/src/routes/discord.ts` — Discord-backed configuration, embeds, audit, and moderation API
 - `artifacts/api-server/src/lib/discordGateway.ts` — welcome, anti-nuke, and ticket event handling
 - `lib/db/src/schema/moderation.ts` — persistent server configs, embed templates, and audit events
@@ -38,14 +38,16 @@ Sentinel/Ctrl is a grayscale Discord moderation control panel with persistent se
 - Server settings and embed templates are stored as JSON payloads keyed by Discord guild ID so the panel can evolve without losing existing configuration.
 - The anti-nuke bait channel follows the requested three-step escalation: configured first timeout, configured second timeout, then muted role; the exact warning is stored as a reusable embed template.
 - Gateway events are enabled for guilds, members, messages, and message content; the bot must be invited with the matching privileged intents enabled in the Discord Developer Portal.
+- The bot registers slash commands per guild after Gateway READY; no prefix commands are used.
 
 ## Product
 
-- Lists servers available to the bot and shows a command-center overview.
+- Registers `/panel`, `/ticket`, `/ban`, `/kick`, `/timeout`, `/untimeout`, `/mute`, and `/unmute` in every guild the bot joins.
+- `/panel` opens an in-Discord component panel with welcome preview, Member role setup, rules, anti-nuke, and refresh controls.
 - Saves moderation defaults, welcome flow settings, ticketing IDs, anti-nuke thresholds, and welcome image metadata.
 - Saves and sends welcome, rules, announcement, ticket, and anti-nuke embeds.
 - Supports ban, kick, timeout, untimeout, mute, and unmute actions with confirmation-first UI and audit logging.
-- The background bot listener welcomes new members, enforces the protected bait channel, DMs affected members, purges the bait channel, and creates tickets from `!ticket`.
+- The background bot listener welcomes new members with the CredX banner, assigns the configured `Member` role, enforces the protected bait channel, DMs affected members, purges the bait channel, and creates tickets from `/ticket`.
 
 ## User preferences
 

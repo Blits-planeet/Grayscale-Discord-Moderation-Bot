@@ -73,6 +73,7 @@ export const GetGuildConfigResponse = zod.object({
   "moderation": zod.object({
   "logChannelId": zod.string().nullable(),
   "mutedRoleId": zod.string().nullable(),
+  "memberRoleId": zod.string().nullable(),
   "defaultTimeoutHours": zod.number().min(1),
   "dmUsers": zod.boolean(),
   "deleteCommandMessages": zod.boolean().optional()
@@ -120,6 +121,7 @@ export const UpdateGuildConfigBody = zod.object({
   "moderation": zod.object({
   "logChannelId": zod.string().nullable(),
   "mutedRoleId": zod.string().nullable(),
+  "memberRoleId": zod.string().nullable(),
   "defaultTimeoutHours": zod.number().min(1),
   "dmUsers": zod.boolean(),
   "deleteCommandMessages": zod.boolean().optional()
@@ -159,6 +161,7 @@ export const UpdateGuildConfigResponse = zod.object({
   "moderation": zod.object({
   "logChannelId": zod.string().nullable(),
   "mutedRoleId": zod.string().nullable(),
+  "memberRoleId": zod.string().nullable(),
   "defaultTimeoutHours": zod.number().min(1),
   "dmUsers": zod.boolean(),
   "deleteCommandMessages": zod.boolean().optional()

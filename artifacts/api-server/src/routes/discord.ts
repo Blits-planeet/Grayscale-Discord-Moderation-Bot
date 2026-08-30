@@ -28,6 +28,7 @@ type GuildConfigValue = {
   moderation: {
     logChannelId: string | null;
     mutedRoleId: string | null;
+    memberRoleId: string | null;
     defaultTimeoutHours: number;
     dmUsers: boolean;
     deleteCommandMessages: boolean;
@@ -61,6 +62,7 @@ const defaultConfig = (): GuildConfigValue => ({
   moderation: {
     logChannelId: null,
     mutedRoleId: null,
+    memberRoleId: null,
     defaultTimeoutHours: 5,
     dmUsers: true,
     deleteCommandMessages: true,
@@ -200,6 +202,18 @@ export async function readConfig(guildId: string): Promise<GuildConfig> {
   } as GuildConfig;
 }
 
+export async function saveConfig(guildId: string, config: unknown) {
+  const updatedAt = new Date();
+  await db
+    .insert(serverConfigsTable)
+    .values({ guildId, config, updatedAt })
+    .onConflictDoUpdate({
+      target: serverConfigsTable.guildId,
+      set: { config, updatedAt },
+    });
+  return readConfig(guildId);
+}
+
 export async function ensureTemplates(guildId: string): Promise<EmbedTemplate[]> {
   const rows = await db
     .select()
@@ -292,15 +306,7 @@ router.put("/discord/guilds/:guildId/config", async (req, res) => {
   const body = UpdateGuildConfigBody.safeParse(req.body);
   if (!params.success || !body.success) return res.status(400).json({ error: "Invalid configuration" });
   try {
-    const updatedAt = new Date();
-    await db
-      .insert(serverConfigsTable)
-      .values({ guildId: params.data.guildId, config: body.data, updatedAt })
-      .onConflictDoUpdate({
-        target: serverConfigsTable.guildId,
-        set: { config: body.data, updatedAt },
-      });
-    return res.json(await readConfig(params.data.guildId));
+    return res.json(await saveConfig(params.data.guildId, body.data));
   } catch (error) {
     req.log.error({ err: error }, "Unable to save server config");
     return res.status(500).json({ error: "Unable to save server configuration" });

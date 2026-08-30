@@ -11,6 +11,8 @@ export interface ModerationConfig {
   logChannelId: string | null;
   /** @nullable */
   mutedRoleId: string | null;
+  /** @nullable */
+  memberRoleId: string | null;
   /** @minimum 1 */
   defaultTimeoutHours: number;
   dmUsers: boolean;
