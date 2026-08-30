@@ -68,6 +68,7 @@ export const GetGuildConfigParams = zod.object({
 
 
 
+
 export const GetGuildConfigResponse = zod.object({
   "guildId": zod.string(),
   "moderation": zod.object({
@@ -89,14 +90,21 @@ export const GetGuildConfigResponse = zod.object({
   "tickets": zod.object({
   "enabled": zod.boolean(),
   "categoryId": zod.string().nullable(),
+  "panelChannelId": zod.string().nullable(),
   "supportRoleId": zod.string().nullable(),
   "transcriptChannelId": zod.string().nullable()
+}),
+  "verification": zod.object({
+  "enabled": zod.boolean(),
+  "channelId": zod.string().nullable(),
+  "emoji": zod.string()
 }),
   "antiNuke": zod.object({
   "enabled": zod.boolean(),
   "baitChannelId": zod.string().nullable(),
   "firstTimeoutHours": zod.number().min(1),
   "secondTimeoutDays": zod.number().min(1),
+  "thirdTimeoutDays": zod.number().min(1),
   "mutedRoleId": zod.string().nullable(),
   "purgeRecentMessages": zod.boolean(),
   "dmReason": zod.boolean()
@@ -111,6 +119,7 @@ export const GetGuildConfigResponse = zod.object({
 export const UpdateGuildConfigParams = zod.object({
   "guildId": zod.coerce.string()
 })
+
 
 
 
@@ -137,19 +146,27 @@ export const UpdateGuildConfigBody = zod.object({
   "tickets": zod.object({
   "enabled": zod.boolean(),
   "categoryId": zod.string().nullable(),
+  "panelChannelId": zod.string().nullable(),
   "supportRoleId": zod.string().nullable(),
   "transcriptChannelId": zod.string().nullable()
+}),
+  "verification": zod.object({
+  "enabled": zod.boolean(),
+  "channelId": zod.string().nullable(),
+  "emoji": zod.string()
 }),
   "antiNuke": zod.object({
   "enabled": zod.boolean(),
   "baitChannelId": zod.string().nullable(),
   "firstTimeoutHours": zod.number().min(1),
   "secondTimeoutDays": zod.number().min(1),
+  "thirdTimeoutDays": zod.number().min(1),
   "mutedRoleId": zod.string().nullable(),
   "purgeRecentMessages": zod.boolean(),
   "dmReason": zod.boolean()
 })
 })
+
 
 
 
@@ -177,14 +194,21 @@ export const UpdateGuildConfigResponse = zod.object({
   "tickets": zod.object({
   "enabled": zod.boolean(),
   "categoryId": zod.string().nullable(),
+  "panelChannelId": zod.string().nullable(),
   "supportRoleId": zod.string().nullable(),
   "transcriptChannelId": zod.string().nullable()
+}),
+  "verification": zod.object({
+  "enabled": zod.boolean(),
+  "channelId": zod.string().nullable(),
+  "emoji": zod.string()
 }),
   "antiNuke": zod.object({
   "enabled": zod.boolean(),
   "baitChannelId": zod.string().nullable(),
   "firstTimeoutHours": zod.number().min(1),
   "secondTimeoutDays": zod.number().min(1),
+  "thirdTimeoutDays": zod.number().min(1),
   "mutedRoleId": zod.string().nullable(),
   "purgeRecentMessages": zod.boolean(),
   "dmReason": zod.boolean()

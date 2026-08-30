@@ -11,6 +11,8 @@ export interface TicketConfig {
   /** @nullable */
   categoryId: string | null;
   /** @nullable */
+  panelChannelId: string | null;
+  /** @nullable */
   supportRoleId: string | null;
   /** @nullable */
   transcriptChannelId: string | null;

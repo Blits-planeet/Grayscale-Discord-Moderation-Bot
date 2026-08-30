@@ -3,10 +3,17 @@ import { execFile } from "node:child_process";
 import { readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import { addAudit, discordFetch, ensureTemplates, readConfig, saveConfig } from "../routes/discord";
+import { addAudit, discordFetch, ensureTemplates, readBotPresenceConfig, readConfig } from "../routes/discord";
 import { logger } from "./logger";
 
-const intents = 1 | 2 | 512 | 32768;
+const intents = 1 | 2 | 512 | 1024 | 32768;
+const activityTypes = {
+  playing: 0,
+  streaming: 1,
+  listening: 2,
+  watching: 3,
+  competing: 5,
+} as const;
 const execFileAsync = promisify(execFile);
 const strikes = new Map<string, { count: number; lastAt: number }>();
 let gatewaySocket: WebSocket | undefined;
@@ -74,12 +81,30 @@ async function rejectInteraction(interaction: any, content: string) {
 
 const slashCommands = [
   {
-    name: "panel",
-    description: "Open the CredX moderation panel",
-  },
-  {
     name: "ticket",
     description: "Create a private support ticket",
+    options: [{
+      name: "category",
+      description: "Choose what your ticket is about",
+      type: 3,
+      required: true,
+      choices: [
+        { name: "Purchasing", value: "purchasing" },
+        { name: "Giveaway (claim/info)", value: "giveaway" },
+        { name: "Scam (report)", value: "scam" },
+        { name: "Support (info)", value: "support" },
+      ],
+    }],
+  },
+  {
+    name: "ticketpanel",
+    description: "Post the CredX ticket category panel",
+    default_member_permissions: "32",
+  },
+  {
+    name: "verifypanel",
+    description: "Post the CredX reaction verification message",
+    default_member_permissions: "32",
   },
   {
     name: "ban",
@@ -120,16 +145,17 @@ const slashCommands = [
   },
   {
     name: "mute",
-    description: "Apply the configured muted role",
+    description: "Timeout a member without using a role",
     default_member_permissions: "32",
     options: [
       { name: "user", description: "Member to mute", type: 6, required: true },
+      { name: "minutes", description: "Timeout duration in minutes", type: 4, required: false, min_value: 1, max_value: 40320 },
       { name: "reason", description: "Reason for the mute", type: 3, required: false },
     ],
   },
   {
     name: "unmute",
-    description: "Remove the configured muted role",
+    description: "Remove a member timeout without using a role",
     default_member_permissions: "32",
     options: [
       { name: "user", description: "Member to unmute", type: 6, required: true },
@@ -159,30 +185,69 @@ async function ensureBotName(currentName: string) {
   }
 }
 
-function panelPayload() {
+const ticketCategories: Record<string, { label: string; channelPrefix: string; description: string }> = {
+  purchasing: { label: "Purchasing", channelPrefix: "purchasing", description: "Questions about buying or orders." },
+  giveaway: { label: "Giveaway (claim/info)", channelPrefix: "giveaway", description: "Claim or ask for information about a giveaway." },
+  scam: { label: "Scam (report)", channelPrefix: "scam", description: "Report a scam or suspicious activity." },
+  support: { label: "Support (info)", channelPrefix: "support", description: "General support and information." },
+};
+
+function ticketPanelPayload() {
   return {
     embeds: [{
-      title: "CredX moderation panel",
-      description: "Use the controls below to manage this server. Server setup actions are only available to moderators.",
+      title: "CredX support tickets",
+      description: "Choose a category below. CredX will create a private channel with a matching category name.",
       color: 0x252830,
-      fields: [
-        { name: "Welcome", value: "Preview the CredX welcome banner in the configured channel.", inline: false },
-        { name: "Member role", value: "Create or connect the `Member` role and assign it to new members.", inline: false },
-        { name: "Protection", value: "Send the saved rules or anti-nuke warning embed.", inline: false },
-      ],
-      footer: { text: "CredX • Discord controls" },
+      footer: { text: "CredX • Ticketing" },
     }],
     components: [{
       type: 1,
-      components: [
-        { type: 2, style: 2, custom_id: "credx:welcome", label: "Welcome preview" },
-        { type: 2, style: 2, custom_id: "credx:member-role", label: "Member role" },
-        { type: 2, style: 2, custom_id: "credx:rules", label: "Send rules" },
-        { type: 2, style: 2, custom_id: "credx:antinuke", label: "Send anti-nuke" },
-        { type: 2, style: 1, custom_id: "credx:refresh", label: "Refresh" },
-      ],
+      components: [{
+        type: 3,
+        custom_id: "credx:ticket-category",
+        placeholder: "Choose a ticket category",
+        options: Object.entries(ticketCategories).map(([value, category]) => ({
+          label: category.label,
+          value,
+          description: category.description,
+        })),
+      }],
     }],
   };
+}
+
+function ticketButtonRow(userId: string, claimed = false) {
+  return {
+    type: 1,
+    components: [
+      { type: 2, style: 4, custom_id: `credx:ticket:close:${userId}`, label: "Close" },
+      { type: 2, style: 2, custom_id: `credx:ticket:ping-admin:${userId}`, label: "Ping admin" },
+      { type: 2, style: 1, custom_id: `credx:ticket:claim:${userId}`, label: claimed ? "Claimed" : "Claim", disabled: claimed },
+    ],
+  };
+}
+
+function ticketMessagePayload(userId: string, categoryKey: string, claimedBy?: string) {
+  const category = ticketCategories[categoryKey] ?? ticketCategories.support;
+  return {
+    content: `<@${userId}>`,
+    embeds: [{
+      title: `CredX Ticket • ${category.label}`,
+      description: "Please explain your question clearly. A member of the team will help you here.",
+      color: 0x6e7178,
+      fields: [
+        { name: "User", value: `<@${userId}>`, inline: true },
+        { name: "Category", value: category.label, inline: true },
+        { name: "Claimed", value: claimedBy ?? "Not claimed", inline: false },
+      ],
+      footer: { text: "CredX ticket controls" },
+    }],
+    components: [ticketButtonRow(userId)],
+  };
+}
+
+function hasRole(interaction: any, roleId: string | null): boolean {
+  return Boolean(roleId && (interaction.member?.roles ?? []).includes(roleId));
 }
 
 async function findWelcomeBannerAsset(): Promise<string> {
@@ -285,14 +350,6 @@ async function ensureMemberRole(guildId: string): Promise<string> {
       body: JSON.stringify({ name: "Member", color: 0x6e7178, mentionable: false }),
     });
   }
-  if (config.moderation.memberRoleId !== role.id) {
-    await saveConfig(guildId, {
-      moderation: { ...config.moderation, memberRoleId: role.id },
-      welcome: config.welcome,
-      tickets: config.tickets,
-      antiNuke: config.antiNuke,
-    });
-  }
   return role.id;
 }
 
@@ -323,9 +380,16 @@ async function sendTemplate(
   });
 }
 
-async function createTicket(guildId: string, userId: string, username: string, sourceChannelId?: string) {
+async function createTicket(
+  guildId: string,
+  userId: string,
+  username: string,
+  categoryKey = "support",
+  sourceChannelId?: string,
+) {
   const config = await readConfig(guildId);
   if (!config.tickets.enabled || !config.tickets.categoryId) return null;
+  const category = ticketCategories[categoryKey] ?? ticketCategories.support;
   const permissionOverwrites = [
     { id: guildId, type: 0, deny: "1024" },
     { id: userId, type: 1, allow: "3072" },
@@ -336,18 +400,154 @@ async function createTicket(guildId: string, userId: string, username: string, s
   const channel = await discordFetch<{ id: string }>(`/guilds/${guildId}/channels`, {
     method: "POST",
     body: JSON.stringify({
-      name: `ticket-${username.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 70) || userId.slice(-6)}`,
+      name: `${category.channelPrefix}-${username.toLowerCase().replace(/[^a-z0-9-]/g, "").slice(0, 70) || userId.slice(-6)}`,
       type: 0,
       parent_id: config.tickets.categoryId,
       permission_overwrites: permissionOverwrites,
     }),
   });
-  await sendTemplate(channel.id, "ticket", { guildId, user: userMention(userId), server: guildId });
+  await discordFetch(`/channels/${channel.id}/messages`, {
+    method: "POST",
+    body: JSON.stringify(ticketMessagePayload(userId, categoryKey)),
+  });
   await addAudit(guildId, "ticket_created", channel.id, userId);
   if (sourceChannelId && config.moderation.deleteCommandMessages) {
     await discordFetch(`/channels/${sourceChannelId}/messages`, { method: "DELETE" }).catch(() => undefined);
   }
   return channel.id;
+}
+
+async function sendTicketPanel(channelId: string) {
+  return discordFetch<{ id: string }>(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify(ticketPanelPayload()),
+  });
+}
+
+async function sendVerificationPanel(channelId: string, emoji: string) {
+  const message = await discordFetch<{ id: string }>(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({
+      embeds: [{
+        title: "CredX verification",
+        description: `React with ${emoji} to receive the Member role. Remove your reaction to remove the role again.`,
+        color: 0x252830,
+        footer: { text: "CredX • Verification" },
+      }],
+    }),
+  });
+  await discordFetch(`/channels/${channelId}/messages/${message.id}/reactions/${encodeURIComponent(emoji)}/@me`, {
+    method: "PUT",
+  });
+  return message;
+}
+
+function reactionMatches(reaction: any, configuredEmoji: string): boolean {
+  if (reaction?.emoji?.name === configuredEmoji || reaction?.emoji?.id === configuredEmoji) return true;
+  const customMatch = configuredEmoji.match(/^<a?:[^:>]+:(\d+)>$/);
+  return Boolean(customMatch && reaction?.emoji?.id === customMatch[1]);
+}
+
+async function isCredxVerificationMessage(guildId: string, channelId: string, messageId: string, reaction: any) {
+  const config = await readConfig(guildId);
+  if (!config.verification.enabled || config.verification.channelId !== channelId || !reactionMatches(reaction, config.verification.emoji)) return false;
+  const message = await discordFetch<any>(`/channels/${channelId}/messages/${messageId}`);
+  return message.author?.id === applicationId && message.embeds?.[0]?.title === "CredX verification";
+}
+
+async function handleVerificationReaction(reaction: any, added: boolean) {
+  if (!reaction.guild_id || reaction.user_id === applicationId) return;
+  if (!await isCredxVerificationMessage(reaction.guild_id, reaction.channel_id, reaction.message_id, reaction)) return;
+  const roleId = await ensureMemberRole(reaction.guild_id);
+  await discordFetch(`/guilds/${reaction.guild_id}/members/${reaction.user_id}/roles/${roleId}`, {
+    method: added ? "PUT" : "DELETE",
+    headers: { "X-Audit-Log-Reason": `CredX verification reaction ${added ? "added" : "removed"}` },
+  });
+  await addAudit(reaction.guild_id, added ? "verification_role_added" : "verification_role_removed", reaction.user_id);
+}
+
+async function handleTicketInteraction(interaction: any) {
+  const customId = interaction.data?.custom_id as string;
+  if (customId === "credx:ticket-category") {
+    const categoryKey = interaction.data?.values?.[0] ?? "support";
+    await deferInteraction(interaction, true);
+    const member = interaction.member?.user;
+    const channelId = await createTicket(
+      interaction.guild_id,
+      member?.id ?? interaction.member?.user_id,
+      member?.username ?? "member",
+      categoryKey,
+    );
+    await editInteraction(interaction, {
+      content: channelId
+        ? `Ticket created: <#${channelId}>`
+        : "Tickets are not configured yet. Set a ticket category first.",
+    });
+    return;
+  }
+
+  const [, , action, ownerId] = customId.split(":");
+  const config = await readConfig(interaction.guild_id);
+  const canManageTicket = botCanManageGuild(interaction) || hasRole(interaction, config.tickets.supportRoleId);
+  if (!canManageTicket) {
+    await rejectInteraction(interaction, "Only admins or the configured support role can manage tickets.");
+    return;
+  }
+
+  if (action === "ping-admin") {
+    if (!config.tickets.supportRoleId) {
+      await rejectInteraction(interaction, "Set a support role before using Ping admin.");
+      return;
+    }
+    await interactionCallback(interaction, {
+      type: 4,
+      data: {
+        content: `<@&${config.tickets.supportRoleId}> a ticket needs attention from <@${ownerId}>.`,
+        allowed_mentions: { roles: [config.tickets.supportRoleId], users: [ownerId] },
+      },
+    });
+    return;
+  }
+
+  if (action === "close") {
+    await interactionCallback(interaction, {
+      type: 4,
+      data: { content: "This ticket will close in a moment.", flags: 64 },
+    });
+    await addAudit(interaction.guild_id, "ticket_closed", interaction.channel_id, interaction.member?.user?.id ?? null);
+    setTimeout(() => {
+      void discordFetch(`/channels/${interaction.channel_id}`, {
+        method: "DELETE",
+        headers: { "X-Audit-Log-Reason": "Ticket closed from CredX panel" },
+      }).catch(() => undefined);
+    }, 1_500);
+    return;
+  }
+
+  if (action === "claim") {
+    const currentEmbed = interaction.message?.embeds?.[0] ?? {};
+    const currentFields = Array.isArray(currentEmbed.fields) ? currentEmbed.fields : [];
+    const claimant = interaction.member?.user?.global_name ?? interaction.member?.user?.username ?? "Admin";
+    const fields = [
+      ...currentFields.filter((field: any) => field.name !== "Claimed"),
+      { name: "Claimed", value: claimant, inline: false },
+    ];
+    await interactionCallback(interaction, {
+      type: 7,
+      data: {
+        content: `<@${ownerId}>`,
+        embeds: [{
+          title: currentEmbed.title ?? "CredX Ticket",
+          description: currentEmbed.description ?? "A member of the team will help you here.",
+          color: currentEmbed.color ?? 0x6e7178,
+          fields,
+          footer: { text: "CredX ticket controls" },
+        }],
+        components: [ticketButtonRow(ownerId, true)],
+      },
+    });
+    await addAudit(interaction.guild_id, "ticket_claimed", interaction.channel_id, interaction.member?.user?.id ?? null);
+  }
 }
 
 async function purgeBaitMessage(channelId: string, messageId: string, purgeRecent: boolean) {
@@ -404,13 +604,12 @@ async function handleBaitMessage(message: any) {
       body: JSON.stringify({ communication_disabled_until: new Date(Date.now() + config.antiNuke.secondTimeoutDays * 86_400_000).toISOString() }),
     });
   } else {
-    const roleId = config.antiNuke.mutedRoleId ?? config.moderation.mutedRoleId;
-    if (roleId) {
-      await discordFetch(`/guilds/${message.guild_id}/members/${message.author.id}/roles/${roleId}`, {
-        method: "PUT",
-        headers: { "X-Audit-Log-Reason": encodeURIComponent(reason) },
-      });
-    }
+    const until = new Date(Date.now() + config.antiNuke.thirdTimeoutDays * 86_400_000).toISOString();
+    await discordFetch(`/guilds/${message.guild_id}/members/${message.author.id}`, {
+      method: "PATCH",
+      headers: { "X-Audit-Log-Reason": encodeURIComponent(reason) },
+      body: JSON.stringify({ communication_disabled_until: until }),
+    });
   }
   await purgeBaitMessage(message.channel_id, message.id, config.antiNuke.purgeRecentMessages);
   if (config.antiNuke.dmReason) {
@@ -422,11 +621,6 @@ async function handleBaitMessage(message: any) {
 async function handleWelcome(member: any) {
   if (!member.guild_id || member.user?.bot) return;
   const config = await readConfig(member.guild_id);
-  const memberRoleId = await ensureMemberRole(member.guild_id);
-  await discordFetch(`/guilds/${member.guild_id}/members/${member.user.id}/roles/${memberRoleId}`, {
-    method: "PUT",
-    headers: { "X-Audit-Log-Reason": "CredX automatic Member role" },
-  });
   if (!config.welcome.enabled || !config.welcome.channelId) return;
   const guild = await discordFetch<{ name: string; approximate_member_count?: number }>(`/guilds/${member.guild_id}?with_counts=true`);
   await sendWelcomeMessage(
@@ -469,10 +663,13 @@ async function executeModerationCommand(interaction: any, action: string) {
     });
   } else {
     const config = await readConfig(guildId);
-    if (!config.moderation.mutedRoleId) return "Set a muted role in CredX before using mute commands.";
-    await discordFetch(`/guilds/${guildId}/members/${userId}/roles/${config.moderation.mutedRoleId}`, {
-      method: action === "mute" ? "PUT" : "DELETE",
+    const until = action === "mute"
+      ? new Date(Date.now() + Number(interactionOption(interaction, "minutes") ?? config.moderation.defaultTimeoutHours * 60) * 60_000).toISOString()
+      : null;
+    await discordFetch(`/guilds/${guildId}/members/${userId}`, {
+      method: "PATCH",
       headers: { "X-Audit-Log-Reason": encodeURIComponent(safeReason) },
+      body: JSON.stringify({ communication_disabled_until: until }),
     });
   }
   await addAudit(guildId, `slash_${action}`, userId, interaction.member?.user?.id ?? null);
@@ -494,6 +691,7 @@ async function handleInteraction(interaction: any) {
         interaction.guild_id,
         member?.id ?? interaction.member?.user_id,
         member?.username ?? "member",
+        interactionOption(interaction, "category") ?? "support",
       );
       await editInteraction(interaction, {
         content: channelId ? `Ticket created: <#${channelId}>` : "Tickets are not configured yet. Set a ticket category first.",
@@ -506,8 +704,27 @@ async function handleInteraction(interaction: any) {
       return;
     }
 
-    if (command === "panel") {
-      await interactionCallback(interaction, { type: 4, data: { ...panelPayload(), flags: 64 } });
+    if (command === "ticketpanel") {
+      await deferInteraction(interaction, true);
+      const config = await readConfig(interaction.guild_id);
+      if (!config.tickets.panelChannelId) {
+        await editInteraction(interaction, { content: "Set tickets.panelChannelId in credx.config.json first." });
+        return;
+      }
+      const message = await sendTicketPanel(config.tickets.panelChannelId);
+      await editInteraction(interaction, { content: `Ticket dropdown posted in <#${config.tickets.panelChannelId}>: https://discord.com/channels/${interaction.guild_id}/${config.tickets.panelChannelId}/${message.id}` });
+      return;
+    }
+
+    if (command === "verifypanel") {
+      await deferInteraction(interaction, true);
+      const config = await readConfig(interaction.guild_id);
+      if (!config.verification.enabled || !config.verification.channelId) {
+        await editInteraction(interaction, { content: "Set verification.channelId in credx.config.json first." });
+        return;
+      }
+      const message = await sendVerificationPanel(config.verification.channelId, config.verification.emoji);
+      await editInteraction(interaction, { content: `Verification message posted in <#${config.verification.channelId}>: https://discord.com/channels/${interaction.guild_id}/${config.verification.channelId}/${message.id}` });
       return;
     }
 
@@ -523,43 +740,10 @@ async function handleInteraction(interaction: any) {
   }
 
   if (interaction.type === 3) {
-    if (!botCanManageGuild(interaction)) {
-      await rejectInteraction(interaction, "You need the Manage Server permission to use the CredX panel.");
+    const customId = interaction.data?.custom_id as string;
+    if (customId === "credx:ticket-category" || customId.startsWith("credx:ticket:")) {
+      await handleTicketInteraction(interaction);
       return;
-    }
-    await deferInteraction(interaction, true);
-    const action = interaction.data?.custom_id;
-    try {
-      if (action === "credx:member-role") {
-        const roleId = await ensureMemberRole(interaction.guild_id);
-        await editInteraction(interaction, { content: `The \`Member\` role is ready: <@&${roleId}>. New members will receive it automatically.` });
-      } else if (action === "credx:welcome") {
-        const config = await readConfig(interaction.guild_id);
-        if (!config.welcome.channelId) {
-          await editInteraction(interaction, { content: "Set a welcome channel before sending a preview." });
-        } else {
-          const guild = await discordFetch<{ name: string; approximate_member_count?: number }>(`/guilds/${interaction.guild_id}?with_counts=true`);
-          const user = interaction.member.user;
-          await sendWelcomeMessage(interaction.guild_id, config.welcome.channelId, user.id, user.global_name ?? user.username ?? "Member", String(guild.approximate_member_count ?? 0), guild.name);
-          await editInteraction(interaction, { content: `Welcome preview sent to <#${config.welcome.channelId}>.` });
-        }
-      } else if (action === "credx:rules" || action === "credx:antinuke") {
-        const config = await readConfig(interaction.guild_id);
-        const templateKey = action === "credx:rules" ? "rules" : "antinuke";
-        const targetChannelId = templateKey === "antinuke" ? config.antiNuke.baitChannelId : config.welcome.channelId;
-        if (!targetChannelId) {
-          await editInteraction(interaction, { content: `Set a target channel for the ${templateKey} embed first.` });
-        } else {
-          await sendTemplate(targetChannelId, templateKey, { guildId: interaction.guild_id });
-          await editInteraction(interaction, { content: `${templateKey} embed sent to <#${targetChannelId}>.` });
-        }
-      } else if (action === "credx:refresh") {
-        await editInteraction(interaction, panelPayload());
-      } else {
-        await editInteraction(interaction, { content: "Unknown CredX panel action." });
-      }
-    } catch {
-      await editInteraction(interaction, { content: "CredX could not complete that panel action. Check the bot permissions and configuration." });
     }
   }
 }
@@ -576,14 +760,22 @@ function connectGateway() {
         if (packet.s !== undefined) sequence = packet.s;
         if (packet.op === 10) {
           heartbeat = setInterval(() => gatewaySocket?.send(JSON.stringify({ op: 1, d: sequence })), packet.d.heartbeat_interval);
-          gatewaySocket?.send(JSON.stringify({
-            op: 2,
-            d: {
-              token,
-              intents,
-              properties: { os: "linux", browser: "credx", device: "credx" },
-            },
-          }));
+          void readBotPresenceConfig().then((presence) => {
+            gatewaySocket?.send(JSON.stringify({
+              op: 2,
+              d: {
+                token,
+                intents,
+                properties: { os: "linux", browser: "credx", device: "credx" },
+                presence: {
+                  since: null,
+                  activities: presence.activity ? [{ name: presence.activity, type: activityTypes[presence.activityType] }] : [],
+                  status: presence.status,
+                  afk: false,
+                },
+              },
+            }));
+          });
         } else if (packet.op === 0 && packet.t === "READY") {
           applicationId = packet.d.user.id;
           logger.info({ guildCount: packet.d.guilds?.length ?? 0 }, "CredX Gateway ready; registering slash commands");
@@ -597,6 +789,10 @@ function connectGateway() {
           void handleBaitMessage(packet.d).catch(() => undefined);
         } else if (packet.op === 0 && packet.t === "GUILD_MEMBER_ADD") {
           void handleWelcome(packet.d).catch(() => undefined);
+        } else if (packet.op === 0 && packet.t === "MESSAGE_REACTION_ADD") {
+          void handleVerificationReaction(packet.d, true).catch(() => undefined);
+        } else if (packet.op === 0 && packet.t === "MESSAGE_REACTION_REMOVE") {
+          void handleVerificationReaction(packet.d, false).catch(() => undefined);
         } else if (packet.op === 0 && packet.t === "INTERACTION_CREATE") {
           void handleInteraction(packet.d).catch(() => undefined);
         } else if (packet.op === 7 || packet.op === 9) {

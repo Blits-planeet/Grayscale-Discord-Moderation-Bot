@@ -8,6 +8,7 @@
 import type { AntiNukeConfig } from './antiNukeConfig';
 import type { ModerationConfig } from './moderationConfig';
 import type { TicketConfig } from './ticketConfig';
+import type { VerificationConfig } from './verificationConfig';
 import type { WelcomeConfig } from './welcomeConfig';
 
 export interface GuildConfig {
@@ -15,6 +16,7 @@ export interface GuildConfig {
   moderation: ModerationConfig;
   welcome: WelcomeConfig;
   tickets: TicketConfig;
+  verification: VerificationConfig;
   antiNuke: AntiNukeConfig;
   updatedAt: string;
 }

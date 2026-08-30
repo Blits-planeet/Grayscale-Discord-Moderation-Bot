@@ -7,6 +7,10 @@ Use the user OAuth connection for account-level discovery only; use a project se
 
 Slash commands and Discord component panels are Gateway interaction events, while command registration is a REST operation. Register guild commands after Gateway READY and verify both paths separately.
 
+This bot's server setup is file-driven through `credx.config.json`; moderation `mute` means Discord communication timeout and must not depend on a mute role.
+
+Bot presence is also configured in that file, with a validated Discord status, activity type, and activity text.
+
 **Why:** The connected Discord integration explicitly limits user OAuth scopes to identity and guild discovery, while Discord rejects channel and moderation endpoints without a bot token.
 
-**How to apply:** When extending this project, keep the bot token in Replit Secrets and never ask for or print it in chat. Gateway features also require the corresponding privileged intents to be enabled in the Discord Developer Portal; slash interactions themselves do not replace the member/message intents needed for joins and moderation automation.
+**How to apply:** When extending this project, keep the bot token in Replit Secrets and never ask for or print it in chat. Put guild IDs, channel IDs, role IDs, and thresholds in `credx.config.json`; slash interactions themselves do not replace the member/message intents needed for joins and moderation automation.

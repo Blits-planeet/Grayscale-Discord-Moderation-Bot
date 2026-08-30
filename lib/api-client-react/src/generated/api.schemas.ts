@@ -64,9 +64,18 @@ export interface TicketConfig {
   /** @nullable */
   categoryId: string | null;
   /** @nullable */
+  panelChannelId: string | null;
+  /** @nullable */
   supportRoleId: string | null;
   /** @nullable */
   transcriptChannelId: string | null;
+}
+
+export interface VerificationConfig {
+  enabled: boolean;
+  /** @nullable */
+  channelId: string | null;
+  emoji: string;
 }
 
 export interface AntiNukeConfig {
@@ -77,6 +86,8 @@ export interface AntiNukeConfig {
   firstTimeoutHours: number;
   /** @minimum 1 */
   secondTimeoutDays: number;
+  /** @minimum 1 */
+  thirdTimeoutDays: number;
   /** @nullable */
   mutedRoleId: string | null;
   purgeRecentMessages: boolean;
@@ -88,6 +99,7 @@ export interface GuildConfig {
   moderation: ModerationConfig;
   welcome: WelcomeConfig;
   tickets: TicketConfig;
+  verification: VerificationConfig;
   antiNuke: AntiNukeConfig;
   updatedAt: string;
 }
@@ -96,6 +108,7 @@ export interface GuildConfigInput {
   moderation: ModerationConfig;
   welcome: WelcomeConfig;
   tickets: TicketConfig;
+  verification: VerificationConfig;
   antiNuke: AntiNukeConfig;
 }
 

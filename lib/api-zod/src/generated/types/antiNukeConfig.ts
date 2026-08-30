@@ -14,6 +14,8 @@ export interface AntiNukeConfig {
   firstTimeoutHours: number;
   /** @minimum 1 */
   secondTimeoutDays: number;
+  /** @minimum 1 */
+  thirdTimeoutDays: number;
   /** @nullable */
   mutedRoleId: string | null;
   purgeRecentMessages: boolean;

@@ -248,21 +248,23 @@ components:
     GuildConfig:
       type: object
       required:
-        [guildId, moderation, welcome, tickets, antiNuke, updatedAt]
+        [guildId, moderation, welcome, tickets, verification, antiNuke, updatedAt]
       properties:
         guildId: { type: string }
         moderation: { $ref: "#/components/schemas/ModerationConfig" }
         welcome: { $ref: "#/components/schemas/WelcomeConfig" }
         tickets: { $ref: "#/components/schemas/TicketConfig" }
+        verification: { $ref: "#/components/schemas/VerificationConfig" }
         antiNuke: { $ref: "#/components/schemas/AntiNukeConfig" }
         updatedAt: { type: string }
     GuildConfigInput:
       type: object
-      required: [moderation, welcome, tickets, antiNuke]
+      required: [moderation, welcome, tickets, verification, antiNuke]
       properties:
         moderation: { $ref: "#/components/schemas/ModerationConfig" }
         welcome: { $ref: "#/components/schemas/WelcomeConfig" }
         tickets: { $ref: "#/components/schemas/TicketConfig" }
+        verification: { $ref: "#/components/schemas/VerificationConfig" }
         antiNuke: { $ref: "#/components/schemas/AntiNukeConfig" }
     ModerationConfig:
       type: object
@@ -286,21 +288,30 @@ components:
         showMemberCount: { type: boolean }
     TicketConfig:
       type: object
-      required: [enabled, categoryId, supportRoleId, transcriptChannelId]
+      required: [enabled, categoryId, panelChannelId, supportRoleId, transcriptChannelId]
       properties:
         enabled: { type: boolean }
         categoryId: { type: ["string", "null"] }
+        panelChannelId: { type: ["string", "null"] }
         supportRoleId: { type: ["string", "null"] }
         transcriptChannelId: { type: ["string", "null"] }
+    VerificationConfig:
+      type: object
+      required: [enabled, channelId, emoji]
+      properties:
+        enabled: { type: boolean }
+        channelId: { type: ["string", "null"] }
+        emoji: { type: string }
     AntiNukeConfig:
       type: object
       required:
-        [enabled, baitChannelId, firstTimeoutHours, secondTimeoutDays, mutedRoleId, purgeRecentMessages, dmReason]
+        [enabled, baitChannelId, firstTimeoutHours, secondTimeoutDays, thirdTimeoutDays, mutedRoleId, purgeRecentMessages, dmReason]
       properties:
         enabled: { type: boolean }
         baitChannelId: { type: ["string", "null"] }
         firstTimeoutHours: { type: number, minimum: 1 }
         secondTimeoutDays: { type: number, minimum: 1 }
+        thirdTimeoutDays: { type: number, minimum: 1 }
         mutedRoleId: { type: ["string", "null"] }
         purgeRecentMessages: { type: boolean }
         dmReason: { type: boolean }

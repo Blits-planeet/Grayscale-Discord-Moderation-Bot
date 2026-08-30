@@ -434,7 +434,7 @@ function SettingsPage() {
   if (configQuery.isError || !config) return <QueryError onRetry={() => configQuery.refetch()} label="Unable to load server settings." />;
   const patch = <K extends keyof GuildConfig>(section: K, values: Partial<GuildConfig[K]>) => setConfig((current) => current ? ({ ...current, [section]: { ...(current[section] as object), ...values } }) : current);
   const save = () => {
-    const input: GuildConfigInput = { moderation: config.moderation, welcome: config.welcome, tickets: config.tickets, antiNuke: config.antiNuke };
+    const input: GuildConfigInput = { moderation: config.moderation, welcome: config.welcome, tickets: config.tickets, verification: config.verification, antiNuke: config.antiNuke };
     updateConfig.mutate({ guildId, data: input }, { onSuccess: (saved) => { setConfig(saved); setNotice({ tone: 'good', text: 'Server settings saved.' }); }, onError: () => setNotice({ tone: 'bad', text: 'Settings could not be saved.' }) });
   };
   const uploadMedia = (file: File) => {

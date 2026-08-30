@@ -25,4 +25,5 @@ export * from './sendTemplateInput';
 export * from './ticketConfig';
 export * from './uploadRequest';
 export * from './uploadResponse';
+export * from './verificationConfig';
 export * from './welcomeConfig';

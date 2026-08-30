@@ -1,0 +1,48 @@
+{
+  "bot": {
+    "status": "online",
+    "activityType": "watching",
+    "activity": "CredX moderation"
+  },
+  "defaults": {
+    "moderation": {
+      "logChannelId": null,
+      "mutedRoleId": null,
+      "memberRoleId": null,
+      "defaultTimeoutHours": 5,
+      "dmUsers": true,
+      "deleteCommandMessages": true
+    },
+    "welcome": {
+      "enabled": true,
+      "channelId": null,
+      "message": "Welcome {user} to {server}.",
+      "imagePath": null,
+      "imageName": "credx-welcome-banner.png",
+      "showMemberCount": true
+    },
+    "tickets": {
+      "enabled": true,
+      "categoryId": null,
+      "panelChannelId": null,
+      "supportRoleId": null,
+      "transcriptChannelId": null
+    },
+    "verification": {
+      "enabled": true,
+      "channelId": null,
+      "emoji": "✅"
+    },
+    "antiNuke": {
+      "enabled": false,
+      "baitChannelId": null,
+      "firstTimeoutHours": 5,
+      "secondTimeoutDays": 5,
+      "thirdTimeoutDays": 30,
+      "mutedRoleId": null,
+      "purgeRecentMessages": true,
+      "dmReason": true
+    }
+  },
+  "guilds": {}
+}

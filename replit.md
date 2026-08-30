@@ -1,6 +1,6 @@
 # CredX Discord Moderation Bot
 
-CredX is a Discord-first moderation bot. Its primary interface is the `/panel` command inside Discord; the existing web artifact is only an optional configuration surface.
+CredX is a Discord-first moderation bot. Its primary setup is the editable `credx.config.json` file; ticket users interact with `/ticketpanel` inside Discord.
 
 ## Run & Operate
 
@@ -36,18 +36,26 @@ CredX is a Discord-first moderation bot. Its primary interface is the `/panel` c
 
 - The Discord OAuth connection is used for account-level access, but live bot operations use the project secret `DISCORD_BOT_TOKEN` because Discord does not permit channel and moderation operations with a user OAuth token.
 - Server settings and embed templates are stored as JSON payloads keyed by Discord guild ID so the panel can evolve without losing existing configuration.
-- The anti-nuke bait channel follows the requested three-step escalation: configured first timeout, configured second timeout, then muted role; the exact warning is stored as a reusable embed template.
+- The anti-nuke bait channel follows the requested three-step escalation: configured first timeout, configured second timeout, then a longer timeout; no mute role is used.
 - Gateway events are enabled for guilds, members, messages, and message content; the bot must be invited with the matching privileged intents enabled in the Discord Developer Portal.
 - The bot registers slash commands per guild after Gateway READY; no prefix commands are used.
+- Reaction-role verification requires the Guild Message Reactions Gateway intent.
 
 ## Product
 
-- Registers `/panel`, `/ticket`, `/ban`, `/kick`, `/timeout`, `/untimeout`, `/mute`, and `/unmute` in every guild the bot joins.
-- `/panel` opens an in-Discord component panel with welcome preview, Member role setup, rules, anti-nuke, and refresh controls.
+- Registers `/ticket`, `/ticketpanel`, `/ban`, `/kick`, `/timeout`, `/untimeout`, `/mute`, and `/unmute` in every guild the bot joins.
+- Server IDs, channel IDs, role IDs, welcome settings, ticket settings, and anti-nuke thresholds are configured in `credx.config.json`.
+- The bot's Discord status is configured globally in `credx.config.json` under `bot.status`, `bot.activityType`, and `bot.activity`.
+- `/ticketpanel` posts a category dropdown for Purchasing, Giveaway (claim/info), Scam (report), and Support (info).
+- `/ticketpanel` posts in `tickets.panelChannelId`; `/verifypanel` posts the reaction-role message in `verification.channelId`.
+- Reacting to CredX's verification message adds the configured `Member` role, and removing the reaction removes it.
+- Ticket channels use category prefixes such as `purchasing-name`, `giveaway-name`, `scam-name`, and `support-name`; each ticket has Close, Ping admin, and Claim controls.
+- Claiming updates the ticket embed with the plain admin name while keeping the ticket user's mention in the embed.
+- `mute` and the anti-nuke escalation use Discord timeouts only; no mute role is required.
 - Saves moderation defaults, welcome flow settings, ticketing IDs, anti-nuke thresholds, and welcome image metadata.
 - Saves and sends welcome, rules, announcement, ticket, and anti-nuke embeds.
 - Supports ban, kick, timeout, untimeout, mute, and unmute actions with confirmation-first UI and audit logging.
-- The background bot listener welcomes new members with the CredX banner, assigns the configured `Member` role, enforces the protected bait channel, DMs affected members, purges the bait channel, and creates tickets from `/ticket`.
+- The background bot listener welcomes new members with the CredX banner, handles verification reactions, enforces the protected bait channel, DMs affected members, purges the bait channel, and creates tickets from `/ticket`.
 
 ## User preferences
 
@@ -58,6 +66,7 @@ CredX is a Discord-first moderation bot. Its primary interface is the `/panel` c
 
 - The bot must be invited to a server and granted the permissions required by each configured action.
 - The Discord Developer Portal must enable the privileged Server Members Intent and Message Content Intent for the Gateway listener.
+- Enable the Guild Message Reactions intent for the reaction-based Member role.
 - The app's upload URL route should be placed behind project access controls before making the panel public.
 
 ## Pointers

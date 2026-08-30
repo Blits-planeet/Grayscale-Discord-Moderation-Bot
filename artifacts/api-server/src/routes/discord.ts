@@ -1,4 +1,6 @@
 import { and, desc, eq } from "drizzle-orm";
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import { Router, type IRouter, type Request, type Response } from "express";
 import {
   type EmbedField,
@@ -44,18 +46,31 @@ type GuildConfigValue = {
   tickets: {
     enabled: boolean;
     categoryId: string | null;
+    panelChannelId: string | null;
     supportRoleId: string | null;
     transcriptChannelId: string | null;
+  };
+  verification: {
+    enabled: boolean;
+    channelId: string | null;
+    emoji: string;
   };
   antiNuke: {
     enabled: boolean;
     baitChannelId: string | null;
     firstTimeoutHours: number;
     secondTimeoutDays: number;
+    thirdTimeoutDays: number;
     mutedRoleId: string | null;
     purgeRecentMessages: boolean;
     dmReason: boolean;
   };
+};
+
+export type BotPresenceConfig = {
+  status: "online" | "idle" | "dnd" | "invisible";
+  activityType: "playing" | "streaming" | "listening" | "watching" | "competing";
+  activity: string;
 };
 
 const defaultConfig = (): GuildConfigValue => ({
@@ -78,14 +93,21 @@ const defaultConfig = (): GuildConfigValue => ({
   tickets: {
     enabled: true,
     categoryId: null,
+    panelChannelId: null,
     supportRoleId: null,
     transcriptChannelId: null,
+  },
+  verification: {
+    enabled: true,
+    channelId: null,
+    emoji: "✅",
   },
   antiNuke: {
     enabled: false,
     baitChannelId: null,
     firstTimeoutHours: 5,
     secondTimeoutDays: 5,
+    thirdTimeoutDays: 30,
     mutedRoleId: null,
     purgeRecentMessages: true,
     dmReason: true,
@@ -148,7 +170,7 @@ const defaultTemplates: Record<string, Omit<EmbedTemplate, "guildId">> = {
     description: "The warning embed for a monitored channel.",
     color: "#54585E",
     content:
-      "🚨 DO NOT SEND MESSAGES IN THIS CHANNEL\n\nAny message posted here is punished automatically.\nNo warning, no countdown. Not even a single character.\n\nWhat happens if you post\n• 1st time — 5 hour timeout\n• 2nd time — 5 day timeout\n• 3rd time — muted (the muted role is applied)\n\nYour message is deleted, your recent messages across the server are purged, and you get a DM explaining why.\n\nWhy this channel exists\nHacked and compromised accounts are used to blast scam links into every channel they can reach. This channel is bait — it is one of the first they hit, and no real member ever posts here by accident.\n\nIf that already happened to you\nTreat your account as compromised: change your Discord password, turn on 2FA, log out of all devices, and remove any authorised apps you don't recognise. Then ask a moderator.\n\nJust don't type here. That's it.",
+      "🚨 DO NOT SEND MESSAGES IN THIS CHANNEL\n\nAny message posted here is punished automatically.\nNo warning, no countdown. Not even a single character.\n\nWhat happens if you post\n• 1st time — 5 hour timeout\n• 2nd time — 5 day timeout\n• 3rd time — 30 day timeout\n\nYour message is deleted, your recent messages across the server are purged, and you get a DM explaining why.\n\nWhy this channel exists\nHacked and compromised accounts are used to blast scam links into every channel they can reach. This channel is bait — it is one of the first they hit, and no real member ever posts here by accident.\n\nIf that already happened to you\nTreat your account as compromised: change your Discord password, turn on 2FA, log out of all devices, and remove any authorised apps you don't recognise. Then ask a moderator.\n\nJust don't type here. That's it.",
     fields: [],
     footer: "Automated enforcement is enabled in this channel",
     enabled: true,
@@ -190,16 +212,70 @@ export async function readConfig(guildId: string): Promise<GuildConfig> {
     .from(serverConfigsTable)
     .where(eq(serverConfigsTable.guildId, guildId))
     .limit(1);
-  const value = { ...defaultConfig(), ...(row?.config as Partial<GuildConfigValue> | undefined) };
-  value.moderation = { ...defaultConfig().moderation, ...value.moderation };
-  value.welcome = { ...defaultConfig().welcome, ...value.welcome };
-  value.tickets = { ...defaultConfig().tickets, ...value.tickets };
-  value.antiNuke = { ...defaultConfig().antiNuke, ...value.antiNuke };
+  const fileConfig = await readFileConfig();
+  const fileDefaults = fileConfig?.defaults ?? {};
+  const fileGuild = fileConfig?.guilds?.[guildId] ?? {};
+  const storedConfig = row?.config as Partial<GuildConfigValue> | undefined;
+  const base = defaultConfig();
+  const value = {
+    moderation: { ...base.moderation, ...storedConfig?.moderation, ...fileDefaults.moderation, ...fileGuild.moderation },
+    welcome: { ...base.welcome, ...storedConfig?.welcome, ...fileDefaults.welcome, ...fileGuild.welcome },
+    tickets: { ...base.tickets, ...storedConfig?.tickets, ...fileDefaults.tickets, ...fileGuild.tickets },
+    verification: { ...base.verification, ...storedConfig?.verification, ...fileDefaults.verification, ...fileGuild.verification },
+    antiNuke: { ...base.antiNuke, ...storedConfig?.antiNuke, ...fileDefaults.antiNuke, ...fileGuild.antiNuke },
+  };
   return {
     guildId,
     ...value,
     updatedAt: row?.updatedAt?.toISOString() ?? new Date().toISOString(),
   } as GuildConfig;
+}
+
+type ConfigFile = {
+  bot?: Partial<BotPresenceConfig>;
+  defaults?: Partial<GuildConfigValue>;
+  guilds?: Record<string, Partial<GuildConfigValue>>;
+};
+
+let configFileCache: { path: string; mtimeMs: number; value: ConfigFile } | null = null;
+
+async function readFileConfig(): Promise<ConfigFile | null> {
+  const candidates = [
+    path.resolve(process.cwd(), "credx.config.json"),
+    path.resolve(process.cwd(), "../../credx.config.json"),
+    path.resolve(__dirname, "../../../credx.config.json"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const metadata = await stat(candidate);
+      if (configFileCache?.path === candidate && configFileCache.mtimeMs === metadata.mtimeMs) {
+        return configFileCache.value;
+      }
+      const parsed = JSON.parse(await readFile(candidate, "utf8")) as ConfigFile;
+      configFileCache = { path: candidate, mtimeMs: metadata.mtimeMs, value: parsed };
+      return parsed;
+    } catch (error: any) {
+      if (error?.code === "ENOENT") continue;
+      throw new Error(`Unable to read credx.config.json: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return null;
+}
+
+export async function readBotPresenceConfig(): Promise<BotPresenceConfig> {
+  const fileConfig = await readFileConfig();
+  const presence = {
+    status: fileConfig?.bot?.status ?? "online",
+    activityType: fileConfig?.bot?.activityType ?? "watching",
+    activity: fileConfig?.bot?.activity ?? "CredX moderation",
+  };
+  if (!["online", "idle", "dnd", "invisible"].includes(presence.status)) {
+    throw new Error("credx.config.json bot.status must be online, idle, dnd, or invisible");
+  }
+  if (!["playing", "streaming", "listening", "watching", "competing"].includes(presence.activityType)) {
+    throw new Error("credx.config.json bot.activityType must be playing, streaming, listening, watching, or competing");
+  }
+  return presence;
 }
 
 export async function saveConfig(guildId: string, config: unknown) {
@@ -390,10 +466,14 @@ router.post("/discord/guilds/:guildId/moderation/actions", async (req, res) => {
       await discordFetch(`/guilds/${guildId}/members/${userId}`, { method: "PATCH", headers: { "X-Audit-Log-Reason": encodeURIComponent(safeReason) }, body: JSON.stringify({ communication_disabled_until: until }) });
     } else {
       const config = await readConfig(guildId);
-      const roleId = config.moderation.mutedRoleId;
-      if (!roleId) return res.status(400).json({ error: "Set a muted role before using mute actions" });
-      const verb = action === "mute" ? "PUT" : "DELETE";
-      await discordFetch(`/guilds/${guildId}/members/${userId}/roles/${roleId}`, { method: verb, headers: { "X-Audit-Log-Reason": encodeURIComponent(safeReason) } });
+      const until = action === "mute"
+        ? new Date(Date.now() + (durationMinutes ?? config.moderation.defaultTimeoutHours * 60) * 60_000).toISOString()
+        : null;
+      await discordFetch(`/guilds/${guildId}/members/${userId}`, {
+        method: "PATCH",
+        headers: { "X-Audit-Log-Reason": encodeURIComponent(safeReason) },
+        body: JSON.stringify({ communication_disabled_until: until }),
+      });
     }
     await addAudit(guildId, action, userId);
     return res.json({ success: true, action, userId, message: `${action} applied to ${userId}` } satisfies ModerationResult);
