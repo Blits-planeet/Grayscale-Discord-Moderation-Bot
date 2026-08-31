@@ -1,8 +1,11 @@
 import WebSocket from "ws";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { and, eq } from "drizzle-orm";
+import { db, giveawaysTable } from "@workspace/db";
 import { addAudit, discordFetch, ensureTemplates, readBotPresenceConfig, readConfig } from "../routes/discord";
 import { logger } from "./logger";
 
@@ -95,6 +98,17 @@ const slashCommands = [
         { name: "Support (info)", value: "support" },
       ],
     }],
+  },
+  {
+    name: "giveaway",
+    description: "Start a timed giveaway",
+    default_member_permissions: "32",
+    options: [
+      { name: "prize", description: "What the winner will receive", type: 3, required: true, max_length: 200 },
+      { name: "hours", description: "How many hours the giveaway lasts", type: 4, required: true, min_value: 1, max_value: 720 },
+      { name: "role", description: "Only members with this role can enter", type: 8, required: false },
+      { name: "winners", description: "Number of winners", type: 4, required: false, min_value: 1, max_value: 20 },
+    ],
   },
   {
     name: "ban",
@@ -413,6 +427,191 @@ async function sendVerificationPanel(channelId: string, emoji: string) {
   return message;
 }
 
+type GiveawayRecord = typeof giveawaysTable.$inferSelect;
+const giveawayTimers = new Map<string, NodeJS.Timeout>();
+
+function giveawayParticipants(giveaway: GiveawayRecord): string[] {
+  return Array.isArray(giveaway.participantIds)
+    ? giveaway.participantIds.filter((id): id is string => typeof id === "string")
+    : [];
+}
+
+function giveawayMessagePayload(giveaway: GiveawayRecord, ended = false, winnerIds: string[] = []) {
+  const participants = giveawayParticipants(giveaway);
+  const eligibility = giveaway.requiredRoleId
+    ? `Required role: <@&${giveaway.requiredRoleId}>`
+    : "Everyone can enter";
+  const winners = winnerIds.length
+    ? winnerIds.map((id) => `<@${id}>`).join(", ")
+    : "No valid entries";
+  return {
+    embeds: [{
+      title: `🎉 Giveaway • ${giveaway.prize}`,
+      description: ended
+        ? `This giveaway has ended.\n\nWinner${winnerIds.length === 1 ? "" : "s"}: ${winners}`
+        : `Click the button below to enter.\n\n${eligibility}`,
+      color: ended ? 0x6e7178 : 0x5865f2,
+      fields: [
+        { name: "Prize", value: giveaway.prize, inline: true },
+        { name: "Entries", value: String(participants.length), inline: true },
+        { name: ended ? "Ended" : "Ends", value: ended ? `<t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:f>` : `<t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:R>`, inline: false },
+      ],
+      footer: { text: `CredX • ${giveaway.winnerCount} winner${giveaway.winnerCount === 1 ? "" : "s"}` },
+    }],
+    components: [{
+      type: 1,
+      components: [{
+        type: 2,
+        style: 1,
+        custom_id: `credx:giveaway:enter:${giveaway.id}`,
+        label: ended ? "Giveaway ended" : "Enter giveaway",
+        disabled: ended,
+      }],
+    }],
+  };
+}
+
+async function updateGiveawayMessage(giveaway: GiveawayRecord, ended = false, winnerIds: string[] = []) {
+  await discordFetch(`/channels/${giveaway.channelId}/messages/${giveaway.messageId}`, {
+    method: "PATCH",
+    body: JSON.stringify(giveawayMessagePayload(giveaway, ended, winnerIds)),
+  });
+}
+
+function scheduleGiveaway(giveawayId: string, endsAt: Date) {
+  const existing = giveawayTimers.get(giveawayId);
+  if (existing) clearTimeout(existing);
+  const remaining = endsAt.getTime() - Date.now();
+  const delay = Math.min(Math.max(remaining, 0), 2_147_000_000);
+  const timer = setTimeout(() => {
+    giveawayTimers.delete(giveawayId);
+    if (endsAt.getTime() > Date.now()) {
+      scheduleGiveaway(giveawayId, endsAt);
+    } else {
+      void finishGiveaway(giveawayId).catch((error) => logger.warn({ err: error, giveawayId }, "CredX could not finish giveaway"));
+    }
+  }, delay);
+  giveawayTimers.set(giveawayId, timer);
+}
+
+function pickGiveawayWinners(participants: string[], winnerCount: number): string[] {
+  const shuffled = [...participants];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled.slice(0, winnerCount);
+}
+
+async function finishGiveaway(giveawayId: string) {
+  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, giveawayId)).limit(1);
+  if (!giveaway || giveaway.status !== "active") return;
+  if (giveaway.endsAt.getTime() > Date.now()) {
+    scheduleGiveaway(giveaway.id, giveaway.endsAt);
+    return;
+  }
+  const winnerIds = pickGiveawayWinners(giveawayParticipants(giveaway), giveaway.winnerCount);
+  await db.update(giveawaysTable)
+    .set({ status: "ended", winnerIds })
+    .where(and(eq(giveawaysTable.id, giveaway.id), eq(giveawaysTable.status, "active")));
+  await updateGiveawayMessage(giveaway, true, winnerIds).catch((error) => logger.warn({ err: error, giveawayId }, "CredX could not update ended giveaway message"));
+  let guildName = "the server";
+  try {
+    const guild = await discordFetch<{ name: string }>(`/guilds/${giveaway.guildId}`);
+    guildName = guild.name;
+  } catch {
+    // The winner message remains valid without the guild name.
+  }
+  for (const winnerId of winnerIds) {
+    await sendDm(
+      winnerId,
+      `Congratulations! You won the giveaway for **${giveaway.prize}** in **${guildName}**. Please contact the server staff to claim your prize.`,
+    ).catch((error) => logger.warn({ err: error, giveawayId, winnerId }, "CredX could not DM giveaway winner"));
+  }
+  await addAudit(giveaway.guildId, "giveaway_ended", giveaway.id, winnerIds.join(",") || null);
+}
+
+async function restoreGiveaways() {
+  const activeGiveaways = await db.select().from(giveawaysTable).where(eq(giveawaysTable.status, "active"));
+  for (const giveaway of activeGiveaways) scheduleGiveaway(giveaway.id, giveaway.endsAt);
+}
+
+async function createGiveaway(interaction: any) {
+  const guildId = interaction.guild_id as string;
+  const channelId = interaction.channel_id as string;
+  const prize = String(interactionOption(interaction, "prize") ?? "").trim();
+  const hours = Number(interactionOption(interaction, "hours"));
+  const winnerCount = Number(interactionOption(interaction, "winners") ?? 1);
+  const requiredRoleId = interactionOption(interaction, "role") as string | undefined;
+  if (!prize || !Number.isInteger(hours) || hours < 1 || hours > 720 || !Number.isInteger(winnerCount) || winnerCount < 1 || winnerCount > 20) {
+    throw new Error("Giveaway settings are invalid.");
+  }
+  const giveaway: GiveawayRecord = {
+    id: randomUUID(),
+    guildId,
+    channelId,
+    messageId: "",
+    prize,
+    winnerCount,
+    requiredRoleId: requiredRoleId ?? null,
+    endsAt: new Date(Date.now() + hours * 3_600_000),
+    status: "active",
+    participantIds: [],
+    winnerIds: [],
+    createdBy: interaction.member?.user?.id ?? interaction.user?.id ?? "",
+    createdAt: new Date(),
+  };
+  const message = await discordFetch<{ id: string }>(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify(giveawayMessagePayload(giveaway)),
+  });
+  giveaway.messageId = message.id;
+  await db.insert(giveawaysTable).values(giveaway);
+  scheduleGiveaway(giveaway.id, giveaway.endsAt);
+  await addAudit(guildId, "giveaway_created", giveaway.id, giveaway.createdBy || null);
+  return giveaway;
+}
+
+async function handleGiveawayInteraction(interaction: any) {
+  const customId = String(interaction.data?.custom_id ?? "");
+  const giveawayId = customId.split(":")[3];
+  if (!giveawayId || !interaction.guild_id) return;
+  await deferInteraction(interaction, true);
+  const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, giveawayId)).limit(1);
+  if (!giveaway || giveaway.guildId !== interaction.guild_id) {
+    await editInteraction(interaction, { content: "This giveaway could not be found." });
+    return;
+  }
+  if (giveaway.status !== "active" || giveaway.endsAt.getTime() <= Date.now()) {
+    await finishGiveaway(giveaway.id);
+    await editInteraction(interaction, { content: "This giveaway has ended." });
+    return;
+  }
+  const userId = interaction.member?.user?.id ?? interaction.user?.id;
+  if (!userId) {
+    await editInteraction(interaction, { content: "Your Discord user could not be identified." });
+    return;
+  }
+  const participants = giveawayParticipants(giveaway);
+  if (participants.includes(userId)) {
+    await editInteraction(interaction, { content: "You are already entered in this giveaway." });
+    return;
+  }
+  if (giveaway.requiredRoleId) {
+    const member = await discordFetch<{ roles?: string[] }>(`/guilds/${giveaway.guildId}/members/${userId}`);
+    if (!member.roles?.includes(giveaway.requiredRoleId)) {
+      await editInteraction(interaction, { content: "You do not have the required role for this giveaway." });
+      return;
+    }
+  }
+  const updatedParticipants = [...participants, userId];
+  await db.update(giveawaysTable)
+    .set({ participantIds: updatedParticipants })
+    .where(and(eq(giveawaysTable.id, giveaway.id), eq(giveawaysTable.status, "active")));
+  await updateGiveawayMessage({ ...giveaway, participantIds: updatedParticipants });
+  await editInteraction(interaction, { content: "You are entered in the giveaway. Good luck!" });
+}
+
 async function hasCredxPanel(channelId: string, title: string): Promise<boolean> {
   const messages = await discordFetch<Array<{ author?: { id?: string }; embeds?: Array<{ title?: string }> }>>(`/channels/${channelId}/messages?limit=100`);
   return messages.some((message) => message.author?.id === applicationId && message.embeds?.some((embed) => embed.title === title));
@@ -691,6 +890,19 @@ async function handleInteraction(interaction: any) {
       return;
     }
 
+    if (command === "giveaway") {
+      await deferInteraction(interaction, true);
+      try {
+        const giveaway = await createGiveaway(interaction);
+        await editInteraction(interaction, {
+          content: `Giveaway started for **${giveaway.prize}** and ends <t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:R>.`,
+        });
+      } catch {
+        await editInteraction(interaction, { content: "The giveaway could not be started. Check the bot's channel permissions and database connection." });
+      }
+      return;
+    }
+
     if (["ban", "kick", "mute", "unmute"].includes(command)) {
       await deferInteraction(interaction, true);
       try {
@@ -704,6 +916,10 @@ async function handleInteraction(interaction: any) {
 
   if (interaction.type === 3) {
     const customId = interaction.data?.custom_id as string;
+    if (customId.startsWith("credx:giveaway:enter:")) {
+      await handleGiveawayInteraction(interaction);
+      return;
+    }
     if (customId === "credx:ticket-category" || customId.startsWith("credx:ticket:")) {
       await handleTicketInteraction(interaction);
       return;
@@ -747,6 +963,7 @@ function connectGateway() {
             void registerSlashCommands(guild.id).catch(() => undefined);
             void ensureGuildPanels(guild.id).catch((error) => logger.warn({ err: error, guildId: guild.id }, "CredX could not sync automatic panels"));
           }
+          void restoreGiveaways().catch((error) => logger.warn({ err: error }, "CredX could not restore active giveaways"));
         } else if (packet.op === 0 && packet.t === "GUILD_CREATE") {
           void registerSlashCommands(packet.d.id).catch(() => undefined);
           void ensureGuildPanels(packet.d.id).catch((error) => logger.warn({ err: error, guildId: packet.d.id }, "CredX could not sync automatic panels"));

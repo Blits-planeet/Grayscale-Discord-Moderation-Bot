@@ -43,17 +43,19 @@ CredX is a Discord-first moderation bot. Its primary setup is the editable `cred
 
 ## Product
 
-- Registers `/ticket`, `/ban`, `/kick`, `/mute`, and `/unmute` in every guild the bot joins.
+- Registers `/ticket`, `/giveaway`, `/ban`, `/kick`, `/mute`, and `/unmute` in every guild the bot joins.
 - Server IDs, channel IDs, role IDs, welcome settings, ticket settings, and anti-nuke thresholds are configured in `credx.config.json`.
 - The bot's Discord status is configured globally in `credx.config.json` under `bot.status`, `bot.activityType`, and `bot.activity`.
 - CredX automatically posts the ticket embed with categories Purchasing, Giveaway (claim/info), Scam (report), and Support (info) in `tickets.panelChannelId`.
 - CredX automatically posts the reaction-role message in `verification.channelId`; reacting adds the configured `Member` role, removing the reaction removes it, and no role is assigned on join.
+- `/giveaway` accepts a prize, duration in hours, an optional required role, and an optional winner count. Entries use a button, winners are selected randomly, and each winner receives an English DM.
 - Ticket channels use category prefixes such as `purchasing-name`, `giveaway-name`, `scam-name`, and `support-name`; each ticket has Close, Ping admin, and Claim controls.
 - Claiming updates the ticket embed with the plain admin name while keeping the ticket user's mention in the embed.
 - `mute` and the anti-nuke escalation use Discord timeouts only; no mute role is required.
 - Saves moderation defaults, welcome flow settings, ticketing IDs, anti-nuke thresholds, and welcome image metadata.
 - Saves and sends welcome, rules, announcement, ticket, and anti-nuke embeds.
 - Supports ban, kick, mute, and unmute actions with confirmation-first UI and audit logging.
+- Active giveaways are stored in the database and their timers are restored after a bot restart.
 - The background bot listener welcomes new members with the CredX banner, handles verification reactions, enforces the protected bait channel, DMs affected members, purges the bait channel, and creates tickets from `/ticket`.
 
 ## User preferences

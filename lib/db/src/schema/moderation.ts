@@ -44,3 +44,21 @@ export const auditEventsTable = pgTable("audit_events", {
     .defaultNow()
     .notNull(),
 });
+
+export const giveawaysTable = pgTable("giveaways", {
+  id: text("id").primaryKey(),
+  guildId: text("guild_id").notNull(),
+  channelId: text("channel_id").notNull(),
+  messageId: text("message_id").notNull(),
+  prize: text("prize").notNull(),
+  winnerCount: integer("winner_count").notNull().default(1),
+  requiredRoleId: text("required_role_id"),
+  endsAt: timestamp("ends_at", { withTimezone: true }).notNull(),
+  status: text("status").notNull().default("active"),
+  participantIds: jsonb("participant_ids").notNull().default([]),
+  winnerIds: jsonb("winner_ids").notNull().default([]),
+  createdBy: text("created_by").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true })
+    .defaultNow()
+    .notNull(),
+});
