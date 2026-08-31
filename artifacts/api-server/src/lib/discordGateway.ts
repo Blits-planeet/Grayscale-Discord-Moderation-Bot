@@ -164,6 +164,78 @@ const slashCommands = [
     ],
   },
   {
+    name: "clear",
+    description: "Delete recent messages from this channel",
+    default_member_permissions: "32",
+    options: [
+      { name: "amount", description: "Number of messages to delete", type: 4, required: true, min_value: 1, max_value: 100 },
+    ],
+  },
+  {
+    name: "lock",
+    description: "Lock this channel for regular members",
+    default_member_permissions: "32",
+  },
+  {
+    name: "unlock",
+    description: "Unlock this channel for regular members",
+    default_member_permissions: "32",
+  },
+  {
+    name: "slowmode",
+    description: "Set the slowmode delay for this channel",
+    default_member_permissions: "32",
+    options: [
+      { name: "seconds", description: "Delay in seconds, 0 to disable", type: 4, required: true, min_value: 0, max_value: 21600 },
+    ],
+  },
+  {
+    name: "poll",
+    description: "Create a button-based poll",
+    default_member_permissions: "32",
+    options: [
+      { name: "question", description: "What should people vote on?", type: 3, required: true, max_length: 200 },
+      { name: "option1", description: "First option", type: 3, required: true, max_length: 80 },
+      { name: "option2", description: "Second option", type: 3, required: true, max_length: 80 },
+      { name: "option3", description: "Third option", type: 3, required: false, max_length: 80 },
+      { name: "option4", description: "Fourth option", type: 3, required: false, max_length: 80 },
+      { name: "hours", description: "Poll duration in hours", type: 4, required: false, min_value: 1, max_value: 168 },
+    ],
+  },
+  {
+    name: "serverinfo",
+    description: "Show server information and statistics",
+  },
+  {
+    name: "userinfo",
+    description: "Show account information and roles",
+    options: [
+      { name: "user", description: "User to inspect", type: 6, required: true },
+    ],
+  },
+  {
+    name: "help",
+    description: "Show all CredX commands and information",
+  },
+  {
+    name: "removerole",
+    description: "Remove a role from a member",
+    default_member_permissions: "32",
+    options: [
+      { name: "user", description: "Member who loses the role", type: 6, required: true },
+      { name: "role", description: "Role to remove", type: 8, required: true },
+    ],
+  },
+  {
+    name: "nickname",
+    description: "Change or clear a member's server nickname",
+    default_member_permissions: "32",
+    options: [
+      { name: "user", description: "Member whose nickname changes", type: 6, required: true },
+      { name: "name", description: "New nickname; omit this option to clear it", type: 3, required: false, max_length: 32 },
+    ],
+  },
+  {
     name: "ban",
     description: "Ban a member from this server",
     default_member_permissions: "32",
@@ -1078,6 +1150,267 @@ async function createAndAssignRole(interaction: any) {
   return role;
 }
 
+async function clearChannelMessages(interaction: any): Promise<number> {
+  const amount = Number(interactionOption(interaction, "amount"));
+  if (!Number.isInteger(amount) || amount < 1 || amount > 100) throw new Error("Amount must be between 1 and 100.");
+  const messages = await discordFetch<Array<{ id: string; timestamp?: string }>>(`/channels/${interaction.channel_id}/messages?limit=${amount}`);
+  const fourteenDaysAgo = Date.now() - 14 * 86_400_000;
+  const deletable = messages.filter((message) => !message.timestamp || new Date(message.timestamp).getTime() >= fourteenDaysAgo);
+  if (deletable.length >= 2) {
+    await discordFetch(`/channels/${interaction.channel_id}/messages/bulk-delete`, {
+      method: "POST",
+      body: JSON.stringify({ messages: deletable.map((message) => message.id) }),
+    });
+  } else if (deletable.length === 1) {
+    await discordFetch(`/channels/${interaction.channel_id}/messages/${deletable[0].id}`, { method: "DELETE" });
+  }
+  await addAudit(interaction.guild_id, "messages_cleared", interaction.channel_id, interaction.member?.user?.id ?? null);
+  return deletable.length;
+}
+
+async function setChannelLock(interaction: any, locked: boolean) {
+  const channelId = interaction.channel_id as string;
+  const guildId = interaction.guild_id as string;
+  if (locked) {
+    await discordFetch(`/channels/${channelId}/permissions/${guildId}`, {
+      method: "PUT",
+      headers: { "X-Audit-Log-Reason": "CredX channel lock" },
+      body: JSON.stringify({ type: 0, allow: "0", deny: "2048" }),
+    });
+  } else {
+    await discordFetch(`/channels/${channelId}/permissions/${guildId}`, {
+      method: "DELETE",
+      headers: { "X-Audit-Log-Reason": "CredX channel unlock" },
+    });
+  }
+  await addAudit(guildId, locked ? "channel_locked" : "channel_unlocked", channelId, interaction.member?.user?.id ?? null);
+}
+
+async function setChannelSlowmode(interaction: any): Promise<number> {
+  const seconds = Number(interactionOption(interaction, "seconds"));
+  if (!Number.isInteger(seconds) || seconds < 0 || seconds > 21600) throw new Error("Slowmode must be between 0 and 21600 seconds.");
+  await discordFetch(`/channels/${interaction.channel_id}`, {
+    method: "PATCH",
+    headers: { "X-Audit-Log-Reason": "CredX slowmode update" },
+    body: JSON.stringify({ rate_limit_per_user: seconds }),
+  });
+  await addAudit(interaction.guild_id, "channel_slowmode_updated", interaction.channel_id, String(seconds));
+  return seconds;
+}
+
+async function removeMemberRole(interaction: any) {
+  const userId = String(interactionOption(interaction, "user") ?? "");
+  const roleId = String(interactionOption(interaction, "role") ?? "");
+  if (!userId || !roleId) throw new Error("User and role are required.");
+  await discordFetch(`/guilds/${interaction.guild_id}/members/${userId}/roles/${roleId}`, {
+    method: "DELETE",
+    headers: { "X-Audit-Log-Reason": "CredX moderator role removal" },
+  });
+  await addAudit(interaction.guild_id, "role_removed", userId, interaction.member?.user?.id ?? null);
+  return { userId, roleId };
+}
+
+async function changeMemberNickname(interaction: any) {
+  const userId = String(interactionOption(interaction, "user") ?? "");
+  const nickname = interactionOption(interaction, "name");
+  const name = nickname === undefined || nickname === null ? null : String(nickname).trim();
+  if (!userId || (name !== null && name.length > 32)) throw new Error("Invalid nickname.");
+  await discordFetch(`/guilds/${interaction.guild_id}/members/${userId}`, {
+    method: "PATCH",
+    headers: { "X-Audit-Log-Reason": "CredX moderator nickname update" },
+    body: JSON.stringify({ nick: name }),
+  });
+  await addAudit(interaction.guild_id, "nickname_changed", userId, interaction.member?.user?.id ?? null);
+  return { userId, name };
+}
+
+function discordTimestampFromId(id: string): number {
+  return Number((BigInt(id) >> 22n)) + 1_420_070_400_000;
+}
+
+async function getServerInfoPayload(guildId: string) {
+  const [guild, channels, roles] = await Promise.all([
+    discordFetch<{ id: string; name: string; owner_id?: string; icon?: string; description?: string; approximate_member_count?: number; approximate_presence_count?: number; verification_level?: number; created_at?: string }>(`/guilds/${guildId}?with_counts=true`),
+    discordFetch<Array<{ id: string; type: number }>>(`/guilds/${guildId}/channels`),
+    discordFetch<Array<{ id: string; managed?: boolean }>>(`/guilds/${guildId}/roles`),
+  ]);
+  const icon = guild.icon ? `https://cdn.discordapp.com/icons/${guildId}/${guild.icon}.png?size=128` : undefined;
+  return {
+    embeds: [{
+      title: guild.name,
+      description: guild.description ?? "CredX server information",
+      color: 0x5865f2,
+      ...(icon ? { thumbnail: { url: icon } } : {}),
+      fields: [
+        { name: "Members", value: String(guild.approximate_member_count ?? "Unknown"), inline: true },
+        { name: "Online", value: String(guild.approximate_presence_count ?? "Unknown"), inline: true },
+        { name: "Channels", value: String(channels.length), inline: true },
+        { name: "Roles", value: String(roles.filter((role) => !role.managed).length), inline: true },
+        { name: "Owner", value: guild.owner_id ? `<@${guild.owner_id}>` : "Unknown", inline: true },
+        { name: "Created", value: `<t:${Math.floor(discordTimestampFromId(guild.id) / 1000)}:D>`, inline: true },
+      ],
+      footer: { text: "CredX • Server information" },
+    }],
+  };
+}
+
+async function getUserInfoPayload(guildId: string, userId: string) {
+  const [member, roles] = await Promise.all([
+    discordFetch<{ user?: { id: string; username?: string; global_name?: string; avatar?: string; bot?: boolean }; roles?: string[]; joined_at?: string; communication_disabled_until?: string }>(`/guilds/${guildId}/members/${userId}`),
+    discordFetch<Array<{ id: string; name: string; managed?: boolean }>>(`/guilds/${guildId}/roles`),
+  ]);
+  if (!member.user) throw new Error("Member not found.");
+  const user = member.user;
+  const roleNames = (member.roles ?? [])
+    .map((roleId) => roles.find((role) => role.id === roleId)?.name)
+    .filter((name): name is string => Boolean(name))
+    .map((name) => `\`${name}\``);
+  const avatar = user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=128` : undefined;
+  return {
+    embeds: [{
+      title: user.global_name ?? user.username ?? "User information",
+      description: `<@${user.id}>${user.bot ? " • Bot account" : ""}`,
+      color: 0x5865f2,
+      ...(avatar ? { thumbnail: { url: avatar } } : {}),
+      fields: [
+        { name: "Username", value: user.username ?? "Unknown", inline: true },
+        { name: "User ID", value: user.id, inline: true },
+        { name: "Account created", value: `<t:${Math.floor(discordTimestampFromId(user.id) / 1000)}:F>`, inline: false },
+        { name: "Joined server", value: member.joined_at ? `<t:${Math.floor(new Date(member.joined_at).getTime() / 1000)}:F>` : "Unknown", inline: false },
+        { name: "Roles", value: roleNames.length ? roleNames.slice(0, 30).join(" ") : "No roles", inline: false },
+        ...(member.communication_disabled_until ? [{ name: "Timeout until", value: `<t:${Math.floor(new Date(member.communication_disabled_until).getTime() / 1000)}:F>`, inline: false }] : []),
+      ],
+      footer: { text: "CredX • User information" },
+    }],
+  };
+}
+
+type PollState = {
+  guildId: string;
+  channelId: string;
+  messageId: string;
+  question: string;
+  options: string[];
+  votes: Map<string, number>;
+  endsAt: number | null;
+  ended: boolean;
+};
+
+const pollStates = new Map<string, PollState>();
+
+function pollMessagePayload(state: PollState) {
+  const counts = state.options.map((_, index) => [...state.votes.values()].filter((vote) => vote === index).length);
+  return {
+    embeds: [{
+      title: `📊 ${state.question}`,
+      description: state.endsAt ? `Vote by clicking a button below.\nEnds <t:${Math.floor(state.endsAt / 1000)}:R>.` : "Vote by clicking a button below.",
+      color: state.ended ? 0x6e7178 : 0x5865f2,
+      fields: state.options.map((option, index) => ({ name: `${index + 1}. ${option}`, value: `**${counts[index]}** vote${counts[index] === 1 ? "" : "s"}`, inline: false })),
+      footer: { text: state.ended ? "CredX • Poll ended" : "CredX • Poll" },
+    }],
+    components: [{
+      type: 1,
+      components: state.options.map((option, index) => ({
+        type: 2,
+        style: index === 0 ? 1 : index === 1 ? 2 : index === 2 ? 3 : 4,
+        custom_id: `credx:poll:${state.messageId}:${index}`,
+        label: option.slice(0, 80),
+        disabled: state.ended,
+      })),
+    }],
+  };
+}
+
+async function createPoll(interaction: any) {
+  const options = ["option1", "option2", "option3", "option4"]
+    .map((name) => String(interactionOption(interaction, name) ?? "").trim())
+    .filter(Boolean);
+  const question = String(interactionOption(interaction, "question") ?? "").trim();
+  const hoursValue = interactionOption(interaction, "hours");
+  const endsAt = hoursValue ? Date.now() + Number(hoursValue) * 3_600_000 : null;
+  if (!question || options.length < 2 || options.length > 4) throw new Error("A poll needs a question and two to four options.");
+  const state: PollState = {
+    guildId: interaction.guild_id,
+    channelId: interaction.channel_id,
+    messageId: randomUUID(),
+    question,
+    options,
+    votes: new Map(),
+    endsAt,
+    ended: false,
+  };
+  const message = await discordFetch<{ id: string }>(`/channels/${state.channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify(pollMessagePayload(state)),
+  });
+  state.messageId = message.id;
+  pollStates.set(message.id, state);
+  await discordFetch(`/channels/${state.channelId}/messages/${message.id}`, {
+    method: "PATCH",
+    body: JSON.stringify(pollMessagePayload(state)),
+  });
+  if (endsAt) {
+    setTimeout(() => {
+      void endPoll(message.id);
+    }, Math.max(0, endsAt - Date.now()));
+  }
+  return message;
+}
+
+async function endPoll(messageId: string) {
+  const state = pollStates.get(messageId);
+  if (!state || state.ended) return;
+  state.ended = true;
+  await discordFetch(`/channels/${state.channelId}/messages/${state.messageId}`, {
+    method: "PATCH",
+    body: JSON.stringify(pollMessagePayload(state)),
+  }).catch(() => undefined);
+}
+
+async function handlePollInteraction(interaction: any) {
+  const [, , , messageId, optionText] = String(interaction.data?.custom_id ?? "").split(":");
+  const optionIndex = Number(optionText);
+  await deferInteraction(interaction, true);
+  const state = pollStates.get(messageId);
+  if (!state || state.ended || (state.endsAt !== null && state.endsAt <= Date.now())) {
+    if (state && !state.ended) await endPoll(messageId);
+    await editInteraction(interaction, { content: "This poll has ended or is no longer available." });
+    return;
+  }
+  if (!Number.isInteger(optionIndex) || optionIndex < 0 || optionIndex >= state.options.length) {
+    await editInteraction(interaction, { content: "That poll option is invalid." });
+    return;
+  }
+  const userId = interaction.member?.user?.id ?? interaction.user?.id;
+  if (!userId) {
+    await editInteraction(interaction, { content: "Your Discord user could not be identified." });
+    return;
+  }
+  state.votes.set(userId, optionIndex);
+  await discordFetch(`/channels/${state.channelId}/messages/${state.messageId}`, {
+    method: "PATCH",
+    body: JSON.stringify(pollMessagePayload(state)),
+  });
+  await editInteraction(interaction, { content: `Your vote for **${state.options[optionIndex]}** has been recorded.` });
+}
+
+async function helpPayload() {
+  return {
+    embeds: [{
+      title: "CredX command help",
+      description: "Use these slash commands in a server. Commands marked with admin permissions require Manage Server.",
+      color: 0x5865f2,
+      fields: [
+        { name: "Support", value: "`/ticket` — open a private support ticket\n`/welcometest` — send one welcome test", inline: false },
+        { name: "Community", value: "`/giveaway` — start a giveaway\n`/poll` — create a button poll\n`/announcement` — post an announcement\n`/annoucement` — announcement alias", inline: false },
+        { name: "Moderation", value: "`/ban`, `/kick`, `/mute`, `/unmute`\n`/clear amount` — delete recent messages\n`/lock`, `/unlock` — close or reopen the current channel\n`/slowmode seconds` — set channel slowmode\n`/removerole user role` — remove a role\n`/nickname user name` — change or clear a nickname", inline: false },
+        { name: "Information", value: "`/serverinfo` — server statistics\n`/userinfo user` — account and roles\n`/invites user` — active invite count\n`/r name color user` — create and assign a role", inline: false },
+      ],
+      footer: { text: "CredX • Help" },
+    }],
+  };
+}
+
 type CachedInvite = { uses: number; inviterId: string | null };
 
 async function refreshGuildInvites(guildId: string) {
@@ -1261,6 +1594,32 @@ async function handleInteraction(interaction: any) {
       return;
     }
 
+    if (command === "help") {
+      await interactionCallback(interaction, { type: 4, data: { ...(await helpPayload()), flags: 64 } });
+      return;
+    }
+
+    if (command === "serverinfo") {
+      await deferInteraction(interaction, true);
+      try {
+        await editInteraction(interaction, await getServerInfoPayload(interaction.guild_id));
+      } catch {
+        await editInteraction(interaction, { content: "Server information could not be loaded." });
+      }
+      return;
+    }
+
+    if (command === "userinfo") {
+      await deferInteraction(interaction, true);
+      try {
+        const userId = String(interactionOption(interaction, "user") ?? "");
+        await editInteraction(interaction, await getUserInfoPayload(interaction.guild_id, userId));
+      } catch {
+        await editInteraction(interaction, { content: "That member could not be found." });
+      }
+      return;
+    }
+
     if (!botCanManageGuild(interaction)) {
       await rejectInteraction(interaction, "You need the Manage Server permission to use CredX moderation controls.");
       return;
@@ -1304,6 +1663,72 @@ async function handleInteraction(interaction: any) {
       return;
     }
 
+    if (command === "clear") {
+      await deferInteraction(interaction, true);
+      try {
+        const deleted = await clearChannelMessages(interaction);
+        await editInteraction(interaction, { content: deleted ? `Deleted **${deleted}** recent message${deleted === 1 ? "" : "s"}.` : "No deletable messages were found. Discord does not allow bulk deletion of messages older than 14 days." });
+      } catch {
+        await editInteraction(interaction, { content: "Messages could not be cleared. Check the bot's Manage Messages permission and the message age." });
+      }
+      return;
+    }
+
+    if (command === "lock" || command === "unlock") {
+      await deferInteraction(interaction, true);
+      try {
+        await setChannelLock(interaction, command === "lock");
+        await editInteraction(interaction, { content: command === "lock" ? "This channel is now locked for regular members." : "This channel is now unlocked." });
+      } catch {
+        await editInteraction(interaction, { content: "The channel could not be locked or unlocked. Check Manage Channels and channel permissions." });
+      }
+      return;
+    }
+
+    if (command === "slowmode") {
+      await deferInteraction(interaction, true);
+      try {
+        const seconds = await setChannelSlowmode(interaction);
+        await editInteraction(interaction, { content: seconds ? `Slowmode set to **${seconds} seconds**.` : "Slowmode disabled for this channel." });
+      } catch {
+        await editInteraction(interaction, { content: "Slowmode could not be updated. Use a value between 0 and 21600 seconds." });
+      }
+      return;
+    }
+
+    if (command === "poll") {
+      await deferInteraction(interaction, true);
+      try {
+        await createPoll(interaction);
+        await editInteraction(interaction, { content: "Poll created. Members can vote with the buttons." });
+      } catch {
+        await editInteraction(interaction, { content: "The poll could not be created. Add a question and at least two options." });
+      }
+      return;
+    }
+
+    if (command === "removerole") {
+      await deferInteraction(interaction, true);
+      try {
+        const { userId, roleId } = await removeMemberRole(interaction);
+        await editInteraction(interaction, { content: `Removed <@&${roleId}> from <@${userId}>.` });
+      } catch {
+        await editInteraction(interaction, { content: "The role could not be removed. Check the member, role hierarchy, and Manage Roles permission." });
+      }
+      return;
+    }
+
+    if (command === "nickname") {
+      await deferInteraction(interaction, true);
+      try {
+        const { userId, name } = await changeMemberNickname(interaction);
+        await editInteraction(interaction, { content: name ? `Changed <@${userId}>'s server nickname to **${name}**.` : `Cleared <@${userId}>'s server nickname.` });
+      } catch {
+        await editInteraction(interaction, { content: "The nickname could not be changed. Check Manage Nicknames, role hierarchy, and the 32-character limit." });
+      }
+      return;
+    }
+
     if (command === "announcement" || command === "annoucement") {
       await deferInteraction(interaction, true);
       try {
@@ -1339,6 +1764,10 @@ async function handleInteraction(interaction: any) {
 
   if (interaction.type === 3) {
     const customId = interaction.data?.custom_id as string;
+    if (customId.startsWith("credx:poll:")) {
+      await handlePollInteraction(interaction);
+      return;
+    }
     if (customId.startsWith("credx:giveaway:enter:")) {
       await handleGiveawayInteraction(interaction);
       return;

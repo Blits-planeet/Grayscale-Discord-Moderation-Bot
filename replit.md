@@ -43,7 +43,7 @@ CredX is a Discord-first moderation bot. Its primary setup is the editable `cred
 
 ## Product
 
-- Registers `/ticket`, `/giveaway`, `/announcement`, `/annoucement`, `/r`, `/invites`, `/welcometest`, `/ban`, `/kick`, `/mute`, and `/unmute` in every guild the bot joins.
+- Registers `/ticket`, `/giveaway`, `/announcement`, `/annoucement`, `/r`, `/invites`, `/welcometest`, `/clear`, `/lock`, `/unlock`, `/slowmode`, `/poll`, `/serverinfo`, `/userinfo`, `/help`, `/removerole`, `/nickname`, `/ban`, `/kick`, `/mute`, and `/unmute` in every guild the bot joins.
 - Server IDs, channel IDs, role IDs, welcome settings, ticket settings, and anti-nuke thresholds are configured in `credx.config.json`.
 - The bot's Discord status is configured globally in `credx.config.json` under `bot.status`, `bot.activityType`, and `bot.activity`.
 - CredX automatically posts the ticket embed with categories Purchasing, Giveaway (claim/info), Scam (report), and Support (info) in `tickets.panelChannelId`.
@@ -51,6 +51,9 @@ CredX is a Discord-first moderation bot. Its primary setup is the editable `cred
 - `/giveaway` accepts a prize, duration in hours, up to three required roles, account/server age requirements, a claim deadline, and an optional winner count. Entries use a button, winners are selected randomly, winners receive an English DM, and unclaimed winners are automatically rerolled.
 - `/announcement` (with the `/annoucement` compatibility alias) posts a configurable embed. `/r` creates a colored custom role and assigns it to a user. `/invites` counts invite-attributed members who are still in the server.
 - `/welcometest` sends exactly one welcome message to the configured welcome channel, using the invoking member or an optional selected user; it does not assign roles or change automatic welcome settings.
+- `/clear amount` removes up to 100 recent messages, `/lock` and `/unlock` control regular-member access to the current channel, and `/slowmode seconds` updates the current channel's slowmode.
+- `/poll` creates a button-based poll with two to four options and optional duration. `/serverinfo`, `/userinfo`, and `/help` provide server, member, and command information.
+- `/removerole user role` removes a role from a member. `/nickname user name` changes a member's server nickname; omitting `name` clears it. These moderation commands require Manage Server and the corresponding Discord bot permissions.
 - Ticket channels use category prefixes such as `purchasing-name`, `giveaway-name`, `scam-name`, and `support-name`; each ticket has Close, Ping admin, and Claim controls.
 - Claiming updates the ticket embed with the plain admin name while keeping the ticket user's mention in the embed.
 - `mute` and the anti-nuke escalation use Discord timeouts only; no mute role is required.
