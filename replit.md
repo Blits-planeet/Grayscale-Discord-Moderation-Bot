@@ -43,13 +43,14 @@ CredX is a Discord-first moderation bot. Its primary setup is the editable `cred
 
 ## Product
 
-- Registers `/ticket`, `/giveaway`, `/announcement`, `/annoucement`, `/r`, `/invites`, `/ban`, `/kick`, `/mute`, and `/unmute` in every guild the bot joins.
+- Registers `/ticket`, `/giveaway`, `/announcement`, `/annoucement`, `/r`, `/invites`, `/welcometest`, `/ban`, `/kick`, `/mute`, and `/unmute` in every guild the bot joins.
 - Server IDs, channel IDs, role IDs, welcome settings, ticket settings, and anti-nuke thresholds are configured in `credx.config.json`.
 - The bot's Discord status is configured globally in `credx.config.json` under `bot.status`, `bot.activityType`, and `bot.activity`.
 - CredX automatically posts the ticket embed with categories Purchasing, Giveaway (claim/info), Scam (report), and Support (info) in `tickets.panelChannelId`.
 - CredX automatically posts the reaction-role message in `verification.channelId`; reacting adds the configured `Member` role, removing the reaction removes it, and no role is assigned on join.
 - `/giveaway` accepts a prize, duration in hours, up to three required roles, account/server age requirements, a claim deadline, and an optional winner count. Entries use a button, winners are selected randomly, winners receive an English DM, and unclaimed winners are automatically rerolled.
 - `/announcement` (with the `/annoucement` compatibility alias) posts a configurable embed. `/r` creates a colored custom role and assigns it to a user. `/invites` counts invite-attributed members who are still in the server.
+- `/welcometest` sends exactly one welcome message to the configured welcome channel, using the invoking member or an optional selected user; it does not assign roles or change automatic welcome settings.
 - Ticket channels use category prefixes such as `purchasing-name`, `giveaway-name`, `scam-name`, and `support-name`; each ticket has Close, Ping admin, and Claim controls.
 - Claiming updates the ticket embed with the plain admin name while keeping the ticket user's mention in the embed.
 - `mute` and the anti-nuke escalation use Discord timeouts only; no mute role is required.
@@ -57,6 +58,7 @@ CredX is a Discord-first moderation bot. Its primary setup is the editable `cred
 - Saves and sends welcome, rules, announcement, ticket, and anti-nuke embeds.
 - Supports ban, kick, mute, and unmute actions with confirmation-first UI and audit logging.
 - Active giveaways are stored in the database and their timers are restored after a bot restart.
+- Closing a ticket exports its messages and attachments as a `.txt` transcript to `tickets.transcriptChannelId` before the ticket channel is deleted.
 - The hoster start file is the root `index.js`; it runs `pnpm --filter @workspace/api-server run dev`. The API entrypoint is `artifacts/api-server/src/index.ts`.
 - The background bot listener welcomes new members with the CredX banner, handles verification reactions, enforces the protected bait channel, DMs affected members, purges the bait channel, and creates tickets from `/ticket`.
 

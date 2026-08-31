@@ -156,6 +156,14 @@ const slashCommands = [
     ],
   },
   {
+    name: "welcometest",
+    description: "Send one test welcome message",
+    default_member_permissions: "32",
+    options: [
+      { name: "user", description: "Member to use in the test welcome", type: 6, required: false },
+    ],
+  },
+  {
     name: "ban",
     description: "Ban a member from this server",
     default_member_permissions: "32",
@@ -196,10 +204,32 @@ const slashCommands = [
 
 async function registerSlashCommands(guildId: string) {
   if (!applicationId) return;
-  await discordFetch(`/applications/${applicationId}/guilds/${guildId}/commands`, {
+  await withDiscordRateLimitRetry(() => discordFetch(`/applications/${applicationId}/guilds/${guildId}/commands`, {
     method: "PUT",
     body: JSON.stringify(slashCommands),
-  });
+  }));
+}
+
+async function clearGlobalSlashCommands() {
+  if (!applicationId) return;
+  await withDiscordRateLimitRetry(() => discordFetch(`/applications/${applicationId}/commands`, {
+    method: "PUT",
+    body: JSON.stringify([]),
+  }));
+}
+
+async function withDiscordRateLimitRetry<T>(request: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      return await request();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const retryAfter = Number(message.match(/retry_after["']?\s*:\s*([0-9.]+)/)?.[1] ?? 0);
+      if (!retryAfter || attempt === 3) throw error;
+      await new Promise((resolve) => setTimeout(resolve, Math.ceil(retryAfter * 1000) + 250));
+    }
+  }
+  throw new Error("Discord request retry limit reached.");
 }
 
 async function ensureBotName(currentName: string) {
@@ -445,6 +475,68 @@ async function createTicket(
     await discordFetch(`/channels/${sourceChannelId}/messages`, { method: "DELETE" }).catch(() => undefined);
   }
   return channel.id;
+}
+
+type TicketTranscriptMessage = {
+  id: string;
+  content?: string;
+  timestamp?: string;
+  author?: { username?: string; global_name?: string; bot?: boolean };
+  attachments?: Array<{ url?: string; filename?: string }>;
+};
+
+async function sendTicketTranscript(guildId: string, ticketChannelId: string) {
+  const config = await readConfig(guildId);
+  if (!config.tickets.transcriptChannelId) {
+    logger.warn({ guildId, ticketChannelId }, "CredX could not send ticket transcript: no transcript channel configured");
+    return;
+  }
+
+  const messages: TicketTranscriptMessage[] = [];
+  let before: string | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    const query = new URLSearchParams({ limit: "100" });
+    if (before) query.set("before", before);
+    const batch = await discordFetch<TicketTranscriptMessage[]>(`/channels/${ticketChannelId}/messages?${query.toString()}`);
+    messages.push(...batch);
+    if (batch.length < 100) break;
+    before = batch[batch.length - 1]?.id;
+    if (!before) break;
+  }
+
+  messages.sort((a, b) => {
+    const aTime = a.timestamp ? new Date(a.timestamp).getTime() : 0;
+    const bTime = b.timestamp ? new Date(b.timestamp).getTime() : 0;
+    return aTime - bTime;
+  });
+  const transcript = [
+    `CredX ticket transcript`,
+    `Channel: #${ticketChannelId}`,
+    `Exported: ${new Date().toISOString()}`,
+    "",
+    ...messages.map((message) => {
+      const author = message.author?.global_name ?? message.author?.username ?? "Unknown user";
+      const timestamp = message.timestamp ? new Date(message.timestamp).toISOString() : "unknown time";
+      const content = message.content?.trim() || "(no text content)";
+      const attachments = (message.attachments ?? [])
+        .map((attachment) => `[attachment: ${attachment.filename ?? "file"}] ${attachment.url ?? ""}`.trim())
+        .join("\n");
+      return `[${timestamp}] ${author}${message.author?.bot ? " [bot]" : ""}: ${content}${attachments ? `\n${attachments}` : ""}`;
+    }),
+    "",
+  ].join("\n").slice(0, 900_000);
+
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify({
+    content: `Transcript for <#${ticketChannelId}>`,
+    allowed_mentions: { parse: [] },
+  }));
+  form.append("files[0]", new Blob([transcript], { type: "text/plain" }), `ticket-${ticketChannelId}.txt`);
+  await discordFetch(`/channels/${config.tickets.transcriptChannelId}/messages`, {
+    method: "POST",
+    body: form,
+  });
+  logger.info({ guildId, ticketChannelId, transcriptChannelId: config.tickets.transcriptChannelId, messageCount: messages.length }, "CredX ticket transcript sent");
 }
 
 async function sendTicketPanel(channelId: string) {
@@ -872,6 +964,9 @@ async function handleTicketInteraction(interaction: any) {
       type: 4,
       data: { content: "This ticket will close in a moment.", flags: 64 },
     });
+    await sendTicketTranscript(interaction.guild_id, interaction.channel_id).catch((error) => {
+      logger.warn({ err: error, guildId: interaction.guild_id, ticketChannelId: interaction.channel_id }, "CredX could not send ticket transcript");
+    });
     await addAudit(interaction.guild_id, "ticket_closed", interaction.channel_id, interaction.member?.user?.id ?? null);
     setTimeout(() => {
       void discordFetch(`/channels/${interaction.channel_id}`, {
@@ -1184,6 +1279,31 @@ async function handleInteraction(interaction: any) {
       return;
     }
 
+    if (command === "welcometest") {
+      await deferInteraction(interaction, true);
+      try {
+        const config = await readConfig(interaction.guild_id);
+        if (!config.welcome.enabled || !config.welcome.channelId) {
+          throw new Error("Welcome channel is not configured.");
+        }
+        const userId = String(interactionOption(interaction, "user") ?? interaction.member?.user?.id ?? "");
+        const member = await discordFetch<{ user?: { id: string; global_name?: string; username?: string } }>(`/guilds/${interaction.guild_id}/members/${userId}`);
+        const guild = await discordFetch<{ name: string; approximate_member_count?: number }>(`/guilds/${interaction.guild_id}?with_counts=true`);
+        await sendWelcomeMessage(
+          interaction.guild_id,
+          config.welcome.channelId,
+          userId,
+          member.user?.global_name ?? member.user?.username ?? "Member",
+          String(guild.approximate_member_count ?? 0),
+          guild.name,
+        );
+        await editInteraction(interaction, { content: `One test welcome was sent in <#${config.welcome.channelId}>.` });
+      } catch {
+        await editInteraction(interaction, { content: "The test welcome could not be sent. Check the welcome channel, banner asset, and bot permissions." });
+      }
+      return;
+    }
+
     if (command === "announcement" || command === "annoucement") {
       await deferInteraction(interaction, true);
       try {
@@ -1262,11 +1382,15 @@ function connectGateway() {
           applicationId = packet.d.user.id;
           logger.info({ guildCount: packet.d.guilds?.length ?? 0 }, "CredX Gateway ready; registering slash commands");
           void ensureBotName(packet.d.user.username).catch(() => undefined);
-          for (const guild of packet.d.guilds ?? []) {
-            void registerSlashCommands(guild.id).catch(() => undefined);
-            void ensureGuildPanels(guild.id).catch((error) => logger.warn({ err: error, guildId: guild.id }, "CredX could not sync automatic panels"));
-            void refreshGuildInvites(guild.id).catch((error) => logger.warn({ err: error, guildId: guild.id }, "CredX could not cache guild invites"));
-          }
+          void clearGlobalSlashCommands()
+            .catch((error) => logger.warn({ err: error }, "CredX could not clear old global slash commands"))
+            .finally(() => {
+              for (const guild of packet.d.guilds ?? []) {
+                void registerSlashCommands(guild.id).catch((error) => logger.warn({ err: error, guildId: guild.id }, "CredX could not register guild slash commands"));
+                void ensureGuildPanels(guild.id).catch((error) => logger.warn({ err: error, guildId: guild.id }, "CredX could not sync automatic panels"));
+                void refreshGuildInvites(guild.id).catch((error) => logger.warn({ err: error, guildId: guild.id }, "CredX could not cache guild invites"));
+              }
+            });
           void restoreGiveaways().catch((error) => logger.warn({ err: error }, "CredX could not restore active giveaways"));
         } else if (packet.op === 0 && packet.t === "GUILD_CREATE") {
           void registerSlashCommands(packet.d.id).catch(() => undefined);

@@ -177,16 +177,20 @@ const defaultTemplates: Record<string, Omit<EmbedTemplate, "guildId">> = {
   },
 };
 
-function botHeaders(extra?: Record<string, string>): Record<string, string> {
+function botHeaders(extra?: Record<string, string>, multipart = false): Record<string, string> {
   const token = process.env.DISCORD_BOT_TOKEN;
   if (!token) throw new Error("DISCORD_BOT_TOKEN is not configured");
-  return { Authorization: `Bot ${token}`, "Content-Type": "application/json", ...extra };
+  return {
+    Authorization: `Bot ${token}`,
+    ...(!multipart && !extra?.["Content-Type"] ? { "Content-Type": "application/json" } : {}),
+    ...extra,
+  };
 }
 
 export async function discordFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${DISCORD_API}${path}`, {
     ...init,
-    headers: botHeaders(init?.headers as Record<string, string> | undefined),
+    headers: botHeaders(init?.headers as Record<string, string> | undefined, typeof FormData !== "undefined" && init?.body instanceof FormData),
   });
   if (!response.ok) {
     const detail = await response.text();
