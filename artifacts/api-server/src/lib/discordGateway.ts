@@ -5,11 +5,11 @@ import { readFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, eq } from "drizzle-orm";
-import { db, giveawaysTable } from "@workspace/db";
+import { db, giveawaysTable, inviteMemberLinksTable } from "@workspace/db";
 import { addAudit, discordFetch, ensureTemplates, readBotPresenceConfig, readConfig } from "../routes/discord";
 import { logger } from "./logger";
 
-const intents = 1 | 2 | 512 | 1024 | 32768;
+const intents = 1 | 2 | 512 | 1024 | 4096 | 32768;
 const activityTypes = {
   playing: 0,
   streaming: 1,
@@ -19,6 +19,7 @@ const activityTypes = {
 } as const;
 const execFileAsync = promisify(execFile);
 const strikes = new Map<string, { count: number; lastAt: number }>();
+const inviteCache = new Map<string, Map<string, { uses: number; inviterId: string | null }>>();
 let gatewaySocket: WebSocket | undefined;
 let heartbeat: NodeJS.Timeout | undefined;
 let reconnectTimer: NodeJS.Timeout | undefined;
@@ -106,8 +107,52 @@ const slashCommands = [
     options: [
       { name: "prize", description: "What the winner will receive", type: 3, required: true, max_length: 200 },
       { name: "hours", description: "How many hours the giveaway lasts", type: 4, required: true, min_value: 1, max_value: 720 },
-      { name: "role", description: "Only members with this role can enter", type: 8, required: false },
+      { name: "role", description: "First required role", type: 8, required: false },
+      { name: "role2", description: "Second required role", type: 8, required: false },
+      { name: "role3", description: "Third required role", type: 8, required: false },
+      { name: "min_account_age_days", description: "Minimum Discord account age in days", type: 4, required: false, min_value: 0, max_value: 3650 },
+      { name: "min_server_age_days", description: "Minimum time in this server in days", type: 4, required: false, min_value: 0, max_value: 3650 },
+      { name: "claim_hours", description: "Hours winners have to claim", type: 4, required: false, min_value: 1, max_value: 168 },
       { name: "winners", description: "Number of winners", type: 4, required: false, min_value: 1, max_value: 20 },
+    ],
+  },
+  {
+    name: "announcement",
+    description: "Post an announcement embed",
+    default_member_permissions: "32",
+    options: [
+      { name: "message", description: "Announcement text", type: 3, required: true, max_length: 4000 },
+      { name: "channel", description: "Channel where the announcement is posted", type: 7, required: false },
+      { name: "title", description: "Optional embed title", type: 3, required: false, max_length: 256 },
+      { name: "color", description: "Optional hex color, for example #5865F2", type: 3, required: false },
+    ],
+  },
+  {
+    name: "annoucement",
+    description: "Post an announcement embed (alias)",
+    default_member_permissions: "32",
+    options: [
+      { name: "message", description: "Announcement text", type: 3, required: true, max_length: 4000 },
+      { name: "channel", description: "Channel where the announcement is posted", type: 7, required: false },
+      { name: "title", description: "Optional embed title", type: 3, required: false, max_length: 256 },
+      { name: "color", description: "Optional hex color, for example #5865F2", type: 3, required: false },
+    ],
+  },
+  {
+    name: "r",
+    description: "Create a custom role and give it to a user",
+    default_member_permissions: "32",
+    options: [
+      { name: "name", description: "Name of the new role", type: 3, required: true, max_length: 100 },
+      { name: "color", description: "Hex color, for example #FF0000", type: 3, required: true },
+      { name: "user", description: "User who receives the role", type: 6, required: true },
+    ],
+  },
+  {
+    name: "invites",
+    description: "Check a user's active invite count",
+    options: [
+      { name: "user", description: "User whose active invites you want to check", type: 6, required: true },
     ],
   },
   {
@@ -436,25 +481,48 @@ function giveawayParticipants(giveaway: GiveawayRecord): string[] {
     : [];
 }
 
+function giveawayRequiredRoles(giveaway: GiveawayRecord): string[] {
+  const configured = Array.isArray(giveaway.requiredRoleIds)
+    ? giveaway.requiredRoleIds.filter((id): id is string => typeof id === "string")
+    : [];
+  return [...new Set([giveaway.requiredRoleId, ...configured].filter((id): id is string => Boolean(id)))];
+}
+
+function giveawayClaimedWinners(giveaway: GiveawayRecord): string[] {
+  return Array.isArray(giveaway.claimedWinnerIds)
+    ? giveaway.claimedWinnerIds.filter((id): id is string => typeof id === "string")
+    : [];
+}
+
 function giveawayMessagePayload(giveaway: GiveawayRecord, ended = false, winnerIds: string[] = []) {
   const participants = giveawayParticipants(giveaway);
-  const eligibility = giveaway.requiredRoleId
-    ? `Required role: <@&${giveaway.requiredRoleId}>`
+  const requiredRoles = giveawayRequiredRoles(giveaway);
+  const eligibility = requiredRoles.length
+    ? `Required roles: ${requiredRoles.map((id) => `<@&${id}>`).join(", ")}`
     : "Everyone can enter";
+  const ageRequirements = [
+    giveaway.minAccountAgeDays > 0 ? `Account age: ${giveaway.minAccountAgeDays}+ days` : "",
+    giveaway.minServerAgeDays > 0 ? `Server membership: ${giveaway.minServerAgeDays}+ days` : "",
+  ].filter(Boolean).join(" • ");
+  const claimedWinners = giveawayClaimedWinners(giveaway);
   const winners = winnerIds.length
     ? winnerIds.map((id) => `<@${id}>`).join(", ")
     : "No valid entries";
+  const claimText = ended && winnerIds.length
+    ? ` Winners have ${giveaway.claimDeadlineHours} hour${giveaway.claimDeadlineHours === 1 ? "" : "s"} to claim using the button below.`
+    : "";
   return {
     embeds: [{
       title: `🎉 Giveaway • ${giveaway.prize}`,
       description: ended
-        ? `This giveaway has ended.\n\nWinner${winnerIds.length === 1 ? "" : "s"}: ${winners}`
-        : `Click the button below to enter.\n\n${eligibility}`,
+        ? `This giveaway has ended.\n\nWinner${winnerIds.length === 1 ? "" : "s"}: ${winners}${claimText}`
+        : `Click the button below to enter.\n\n${eligibility}${ageRequirements ? `\n${ageRequirements}` : ""}`,
       color: ended ? 0x6e7178 : 0x5865f2,
       fields: [
         { name: "Prize", value: giveaway.prize, inline: true },
         { name: "Entries", value: String(participants.length), inline: true },
-        { name: ended ? "Ended" : "Ends", value: ended ? `<t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:f>` : `<t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:R>`, inline: false },
+        { name: ended ? "Claim deadline" : "Ends", value: ended && giveaway.claimDeadlineAt ? `<t:${Math.floor(giveaway.claimDeadlineAt.getTime() / 1000)}:R>` : `<t:${Math.floor(giveaway.endsAt.getTime() / 1000)}:${ended ? "f" : "R"}>`, inline: false },
+        ...(ended ? [{ name: "Claimed", value: claimedWinners.length ? claimedWinners.map((id) => `<@${id}>`).join(", ") : "Nobody yet", inline: false }] : []),
       ],
       footer: { text: `CredX • ${giveaway.winnerCount} winner${giveaway.winnerCount === 1 ? "" : "s"}` },
     }],
@@ -464,8 +532,8 @@ function giveawayMessagePayload(giveaway: GiveawayRecord, ended = false, winnerI
         type: 2,
         style: 1,
         custom_id: `credx:giveaway:enter:${giveaway.id}`,
-        label: ended ? "Giveaway ended" : "Enter giveaway",
-        disabled: ended,
+        label: ended ? (giveaway.status === "ended" ? "Giveaway ended" : winnerIds.length ? "Claim prize" : "Giveaway ended") : "Enter giveaway",
+        disabled: giveaway.status === "ended" || (ended && !winnerIds.length),
       }],
     }],
   };
@@ -505,16 +573,50 @@ function pickGiveawayWinners(participants: string[], winnerCount: number): strin
 
 async function finishGiveaway(giveawayId: string) {
   const [giveaway] = await db.select().from(giveawaysTable).where(eq(giveawaysTable.id, giveawayId)).limit(1);
-  if (!giveaway || giveaway.status !== "active") return;
-  if (giveaway.endsAt.getTime() > Date.now()) {
+  if (!giveaway || !["active", "awaiting_claim"].includes(giveaway.status)) return;
+  if (giveaway.status === "active" && giveaway.endsAt.getTime() > Date.now()) {
     scheduleGiveaway(giveaway.id, giveaway.endsAt);
     return;
   }
-  const winnerIds = pickGiveawayWinners(giveawayParticipants(giveaway), giveaway.winnerCount);
+  if (giveaway.status === "awaiting_claim" && giveaway.claimDeadlineAt && giveaway.claimDeadlineAt.getTime() > Date.now()) {
+    scheduleGiveaway(giveaway.id, giveaway.claimDeadlineAt);
+    return;
+  }
+  const participants = giveawayParticipants(giveaway);
+  const claimedWinners = giveawayClaimedWinners(giveaway);
+  const currentWinners = Array.isArray(giveaway.winnerIds)
+    ? giveaway.winnerIds.filter((id): id is string => typeof id === "string")
+    : [];
+  const unclaimedWinners = currentWinners.filter((id) => !claimedWinners.includes(id));
+  const availableForReroll = participants.filter((id) => !claimedWinners.includes(id) && !currentWinners.includes(id));
+  if (giveaway.status === "awaiting_claim" && unclaimedWinners.length === 0) {
+    await db.update(giveawaysTable).set({ status: "ended" }).where(eq(giveawaysTable.id, giveaway.id));
+    await updateGiveawayMessage({ ...giveaway, status: "ended" }, true, currentWinners).catch((error) => logger.warn({ err: error, giveawayId }, "CredX could not close claimed giveaway"));
+    return;
+  }
+  const winnerIds = giveaway.status === "active"
+    ? pickGiveawayWinners(participants, giveaway.winnerCount)
+    : [...claimedWinners, ...pickGiveawayWinners(availableForReroll, unclaimedWinners.length)];
+  const claimDeadlineAt = winnerIds.length ? new Date(Date.now() + giveaway.claimDeadlineHours * 3_600_000) : null;
+  const nextStatus = winnerIds.length ? "awaiting_claim" : "ended";
+  const nextGiveaway = {
+    ...giveaway,
+    status: nextStatus,
+    winnerIds,
+    claimedWinnerIds: claimedWinners,
+    claimDeadlineAt,
+    rerollCount: giveaway.rerollCount + (giveaway.status === "awaiting_claim" ? 1 : 0),
+  };
   await db.update(giveawaysTable)
-    .set({ status: "ended", winnerIds })
-    .where(and(eq(giveawaysTable.id, giveaway.id), eq(giveawaysTable.status, "active")));
-  await updateGiveawayMessage(giveaway, true, winnerIds).catch((error) => logger.warn({ err: error, giveawayId }, "CredX could not update ended giveaway message"));
+    .set({
+      status: nextStatus,
+      winnerIds,
+      claimDeadlineAt,
+      claimedWinnerIds: claimedWinners,
+      rerollCount: nextGiveaway.rerollCount,
+    })
+    .where(eq(giveawaysTable.id, giveaway.id));
+  await updateGiveawayMessage(nextGiveaway, true, winnerIds).catch((error) => logger.warn({ err: error, giveawayId }, "CredX could not update giveaway message"));
   let guildName = "the server";
   try {
     const guild = await discordFetch<{ name: string }>(`/guilds/${giveaway.guildId}`);
@@ -523,17 +625,25 @@ async function finishGiveaway(giveawayId: string) {
     // The winner message remains valid without the guild name.
   }
   for (const winnerId of winnerIds) {
+    if (claimedWinners.includes(winnerId)) continue;
     await sendDm(
       winnerId,
-      `Congratulations! You won the giveaway for **${giveaway.prize}** in **${guildName}**. Please contact the server staff to claim your prize.`,
+      `Congratulations! You won the giveaway for **${giveaway.prize}** in **${guildName}**. Please click the Claim prize button in the giveaway message within ${giveaway.claimDeadlineHours} hours to claim your prize.`,
     ).catch((error) => logger.warn({ err: error, giveawayId, winnerId }, "CredX could not DM giveaway winner"));
   }
-  await addAudit(giveaway.guildId, "giveaway_ended", giveaway.id, winnerIds.join(",") || null);
+  await addAudit(giveaway.guildId, giveaway.status === "active" ? "giveaway_winners_selected" : "giveaway_rerolled", giveaway.id, winnerIds.join(",") || null);
+  if (claimDeadlineAt) scheduleGiveaway(giveaway.id, claimDeadlineAt);
 }
 
 async function restoreGiveaways() {
-  const activeGiveaways = await db.select().from(giveawaysTable).where(eq(giveawaysTable.status, "active"));
+  const activeGiveaways = await db.select().from(giveawaysTable).where(and(
+    eq(giveawaysTable.status, "active"),
+  ));
+  const claimingGiveaways = await db.select().from(giveawaysTable).where(eq(giveawaysTable.status, "awaiting_claim"));
   for (const giveaway of activeGiveaways) scheduleGiveaway(giveaway.id, giveaway.endsAt);
+  for (const giveaway of claimingGiveaways) {
+    if (giveaway.claimDeadlineAt) scheduleGiveaway(giveaway.id, giveaway.claimDeadlineAt);
+  }
 }
 
 async function createGiveaway(interaction: any) {
@@ -542,8 +652,13 @@ async function createGiveaway(interaction: any) {
   const prize = String(interactionOption(interaction, "prize") ?? "").trim();
   const hours = Number(interactionOption(interaction, "hours"));
   const winnerCount = Number(interactionOption(interaction, "winners") ?? 1);
-  const requiredRoleId = interactionOption(interaction, "role") as string | undefined;
-  if (!prize || !Number.isInteger(hours) || hours < 1 || hours > 720 || !Number.isInteger(winnerCount) || winnerCount < 1 || winnerCount > 20) {
+  const requiredRoleIds = ["role", "role2", "role3"]
+    .map((name) => interactionOption(interaction, name) as string | undefined)
+    .filter((id): id is string => Boolean(id));
+  const minAccountAgeDays = Number(interactionOption(interaction, "min_account_age_days") ?? 7);
+  const minServerAgeDays = Number(interactionOption(interaction, "min_server_age_days") ?? 0);
+  const claimDeadlineHours = Number(interactionOption(interaction, "claim_hours") ?? 24);
+  if (!prize || !Number.isInteger(hours) || hours < 1 || hours > 720 || !Number.isInteger(winnerCount) || winnerCount < 1 || winnerCount > 20 || !Number.isInteger(minAccountAgeDays) || minAccountAgeDays < 0 || !Number.isInteger(minServerAgeDays) || minServerAgeDays < 0 || !Number.isInteger(claimDeadlineHours) || claimDeadlineHours < 1 || claimDeadlineHours > 168) {
     throw new Error("Giveaway settings are invalid.");
   }
   const giveaway: GiveawayRecord = {
@@ -553,11 +668,18 @@ async function createGiveaway(interaction: any) {
     messageId: "",
     prize,
     winnerCount,
-    requiredRoleId: requiredRoleId ?? null,
+    requiredRoleId: requiredRoleIds[0] ?? null,
+    requiredRoleIds,
+    minAccountAgeDays,
+    minServerAgeDays,
+    claimDeadlineHours,
     endsAt: new Date(Date.now() + hours * 3_600_000),
+    claimDeadlineAt: null,
     status: "active",
     participantIds: [],
     winnerIds: [],
+    claimedWinnerIds: [],
+    rerollCount: 0,
     createdBy: interaction.member?.user?.id ?? interaction.user?.id ?? "",
     createdAt: new Date(),
   };
@@ -582,14 +704,41 @@ async function handleGiveawayInteraction(interaction: any) {
     await editInteraction(interaction, { content: "This giveaway could not be found." });
     return;
   }
-  if (giveaway.status !== "active" || giveaway.endsAt.getTime() <= Date.now()) {
-    await finishGiveaway(giveaway.id);
-    await editInteraction(interaction, { content: "This giveaway has ended." });
-    return;
-  }
   const userId = interaction.member?.user?.id ?? interaction.user?.id;
   if (!userId) {
     await editInteraction(interaction, { content: "Your Discord user could not be identified." });
+    return;
+  }
+  if (giveaway.status === "ended") {
+    await editInteraction(interaction, { content: "This giveaway has ended." });
+    return;
+  }
+  const winnerIds = Array.isArray(giveaway.winnerIds)
+    ? giveaway.winnerIds.filter((id): id is string => typeof id === "string")
+    : [];
+  const claimedWinnerIds = giveawayClaimedWinners(giveaway);
+  if (giveaway.status === "awaiting_claim") {
+    if (!winnerIds.includes(userId)) {
+      await editInteraction(interaction, { content: "Only selected winners can claim this giveaway." });
+      return;
+    }
+    if (claimedWinnerIds.includes(userId)) {
+      await editInteraction(interaction, { content: "Your giveaway prize is already marked as claimed." });
+      return;
+    }
+    const updatedClaimed = [...claimedWinnerIds, userId];
+    const nextStatus = updatedClaimed.length >= winnerIds.length ? "ended" : "awaiting_claim";
+    await db.update(giveawaysTable)
+      .set({ claimedWinnerIds: updatedClaimed, status: nextStatus })
+      .where(and(eq(giveawaysTable.id, giveaway.id), eq(giveawaysTable.status, "awaiting_claim")));
+    await updateGiveawayMessage({ ...giveaway, claimedWinnerIds: updatedClaimed, status: nextStatus }, true, winnerIds);
+    await addAudit(giveaway.guildId, "giveaway_claimed", giveaway.id, userId);
+    await editInteraction(interaction, { content: "Your prize claim has been recorded. Please contact the server staff to receive it." });
+    return;
+  }
+  if (giveaway.endsAt.getTime() <= Date.now()) {
+    await finishGiveaway(giveaway.id);
+    await editInteraction(interaction, { content: "This giveaway has ended." });
     return;
   }
   const participants = giveawayParticipants(giveaway);
@@ -597,12 +746,26 @@ async function handleGiveawayInteraction(interaction: any) {
     await editInteraction(interaction, { content: "You are already entered in this giveaway." });
     return;
   }
-  if (giveaway.requiredRoleId) {
-    const member = await discordFetch<{ roles?: string[] }>(`/guilds/${giveaway.guildId}/members/${userId}`);
-    if (!member.roles?.includes(giveaway.requiredRoleId)) {
-      await editInteraction(interaction, { content: "You do not have the required role for this giveaway." });
-      return;
-    }
+  const member = await discordFetch<{ roles?: string[]; joined_at?: string; user?: { bot?: boolean } }>(`/guilds/${giveaway.guildId}/members/${userId}`);
+  if (member.user?.bot) {
+    await editInteraction(interaction, { content: "Bots cannot enter giveaways." });
+    return;
+  }
+  const requiredRoles = giveawayRequiredRoles(giveaway);
+  if (requiredRoles.some((roleId) => !member.roles?.includes(roleId))) {
+    await editInteraction(interaction, { content: "You do not have all required roles for this giveaway." });
+    return;
+  }
+  const discordEpoch = 1_420_070_400_000;
+  const accountCreatedAt = Number((BigInt(userId) >> 22n)) + discordEpoch;
+  const accountAgeDays = (Date.now() - accountCreatedAt) / 86_400_000;
+  if (accountAgeDays < giveaway.minAccountAgeDays) {
+    await editInteraction(interaction, { content: `Your Discord account must be at least ${giveaway.minAccountAgeDays} days old to enter.` });
+    return;
+  }
+  if (giveaway.minServerAgeDays > 0 && (!member.joined_at || (Date.now() - new Date(member.joined_at).getTime()) / 86_400_000 < giveaway.minServerAgeDays)) {
+    await editInteraction(interaction, { content: `You must be a member of this server for at least ${giveaway.minServerAgeDays} days to enter.` });
+    return;
   }
   const updatedParticipants = [...participants, userId];
   await db.update(giveawaysTable)
@@ -775,6 +938,112 @@ async function sendDm(userId: string, content: string) {
   });
 }
 
+function parseRoleColor(value: string): number {
+  const normalized = value.trim().replace(/^#/, "");
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) throw new Error("Color must be a six-digit hex value such as #5865F2.");
+  return Number.parseInt(normalized, 16);
+}
+
+async function createAnnouncement(interaction: any) {
+  const message = String(interactionOption(interaction, "message") ?? "").trim();
+  const title = String(interactionOption(interaction, "title") ?? "Announcement").trim() || "Announcement";
+  const channelId = String(interactionOption(interaction, "channel") ?? interaction.channel_id);
+  const color = parseRoleColor(String(interactionOption(interaction, "color") ?? "#5865F2"));
+  if (!message) throw new Error("Announcement message is required.");
+  return discordFetch<{ id: string }>(`/channels/${channelId}/messages`, {
+    method: "POST",
+    body: JSON.stringify({
+      embeds: [{
+        title,
+        description: message,
+        color,
+        footer: { text: "CredX • Announcement" },
+        timestamp: new Date().toISOString(),
+      }],
+    }),
+  });
+}
+
+async function createAndAssignRole(interaction: any) {
+  const guildId = interaction.guild_id as string;
+  const roleName = String(interactionOption(interaction, "name") ?? "").trim();
+  const color = parseRoleColor(String(interactionOption(interaction, "color") ?? ""));
+  const userId = String(interactionOption(interaction, "user") ?? "");
+  if (!roleName || !userId) throw new Error("Role name and user are required.");
+  const role = await discordFetch<{ id: string; name: string }>(`/guilds/${guildId}/roles`, {
+    method: "POST",
+    headers: { "X-Audit-Log-Reason": `CredX custom role for ${userId}` },
+    body: JSON.stringify({ name: roleName, color, mentionable: true }),
+  });
+  await discordFetch(`/guilds/${guildId}/members/${userId}/roles/${role.id}`, {
+    method: "PUT",
+    headers: { "X-Audit-Log-Reason": `CredX assigned custom role ${role.name}` },
+  });
+  await addAudit(guildId, "custom_role_created", role.id, interaction.member?.user?.id ?? null);
+  return role;
+}
+
+type CachedInvite = { uses: number; inviterId: string | null };
+
+async function refreshGuildInvites(guildId: string) {
+  const invites = await discordFetch<Array<{ code: string; uses?: number; inviter?: { id?: string } }>>(`/guilds/${guildId}/invites`);
+  inviteCache.set(guildId, new Map(invites.map((invite) => [
+    invite.code,
+    { uses: invite.uses ?? 0, inviterId: invite.inviter?.id ?? null } satisfies CachedInvite,
+  ])));
+}
+
+async function trackInviteJoin(member: any) {
+  if (!member.guild_id || !member.user?.id || member.user?.bot) return;
+  await new Promise((resolve) => setTimeout(resolve, 1_500));
+  const previous = inviteCache.get(member.guild_id) ?? new Map<string, CachedInvite>();
+  try {
+    const invites = await discordFetch<Array<{ code: string; uses?: number; inviter?: { id?: string } }>>(`/guilds/${member.guild_id}/invites`);
+    let usedInvite: { code: string; uses: number; inviterId: string | null } | null = null;
+    const current = new Map<string, CachedInvite>();
+    for (const invite of invites) {
+      const currentInvite = { uses: invite.uses ?? 0, inviterId: invite.inviter?.id ?? null } satisfies CachedInvite;
+      current.set(invite.code, currentInvite);
+      if (currentInvite.uses > (previous.get(invite.code)?.uses ?? 0) && (!usedInvite || currentInvite.uses > usedInvite.uses)) {
+        usedInvite = { code: invite.code, ...currentInvite };
+      }
+    }
+    inviteCache.set(member.guild_id, current);
+    if (!usedInvite?.inviterId) return;
+    await db.insert(inviteMemberLinksTable)
+      .values({ guildId: member.guild_id, memberId: member.user.id, inviterId: usedInvite.inviterId })
+      .onConflictDoUpdate({
+        target: [inviteMemberLinksTable.guildId, inviteMemberLinksTable.memberId],
+        set: { inviterId: usedInvite.inviterId, joinedAt: new Date() },
+      });
+  } catch (error) {
+    logger.warn({ err: error, guildId: member.guild_id }, "CredX could not track invite join");
+  }
+}
+
+async function trackInviteLeave(member: any) {
+  if (!member.guild_id || !member.user?.id) return;
+  await db.delete(inviteMemberLinksTable)
+    .where(and(eq(inviteMemberLinksTable.guildId, member.guild_id), eq(inviteMemberLinksTable.memberId, member.user.id)));
+}
+
+async function getActiveInviteCount(guildId: string, inviterId: string): Promise<number> {
+  const links = await db.select().from(inviteMemberLinksTable).where(and(
+    eq(inviteMemberLinksTable.guildId, guildId),
+    eq(inviteMemberLinksTable.inviterId, inviterId),
+  ));
+  let activeCount = 0;
+  for (const link of links) {
+    try {
+      await discordFetch(`/guilds/${guildId}/members/${link.memberId}`);
+      activeCount += 1;
+    } catch {
+      await db.delete(inviteMemberLinksTable).where(eq(inviteMemberLinksTable.id, link.id));
+    }
+  }
+  return activeCount;
+}
+
 async function handleBaitMessage(message: any) {
   if (!message.guild_id || message.author?.bot) return;
   const config = await readConfig(message.guild_id);
@@ -885,6 +1154,18 @@ async function handleInteraction(interaction: any) {
       return;
     }
 
+    if (command === "invites") {
+      await deferInteraction(interaction, true);
+      try {
+        const userId = String(interactionOption(interaction, "user") ?? "");
+        const activeCount = await getActiveInviteCount(interaction.guild_id, userId);
+        await editInteraction(interaction, { content: `<@${userId}> currently has **${activeCount}** active invite${activeCount === 1 ? "" : "s"} in this server.` });
+      } catch {
+        await editInteraction(interaction, { content: "Invite data could not be checked. The bot needs Manage Server permission to read invites." });
+      }
+      return;
+    }
+
     if (!botCanManageGuild(interaction)) {
       await rejectInteraction(interaction, "You need the Manage Server permission to use CredX moderation controls.");
       return;
@@ -899,6 +1180,28 @@ async function handleInteraction(interaction: any) {
         });
       } catch {
         await editInteraction(interaction, { content: "The giveaway could not be started. Check the bot's channel permissions and database connection." });
+      }
+      return;
+    }
+
+    if (command === "announcement" || command === "annoucement") {
+      await deferInteraction(interaction, true);
+      try {
+        const message = await createAnnouncement(interaction);
+        await editInteraction(interaction, { content: `Announcement posted: https://discord.com/channels/${interaction.guild_id}/${interactionOption(interaction, "channel") ?? interaction.channel_id}/${message.id}` });
+      } catch {
+        await editInteraction(interaction, { content: "The announcement could not be posted. Check the channel and bot permissions." });
+      }
+      return;
+    }
+
+    if (command === "r") {
+      await deferInteraction(interaction, true);
+      try {
+        const role = await createAndAssignRole(interaction);
+        await editInteraction(interaction, { content: `Created <@&${role.id}> and gave it to <@${interactionOption(interaction, "user")}>.` });
+      } catch {
+        await editInteraction(interaction, { content: "The custom role could not be created or assigned. Check Manage Roles and the bot role position." });
       }
       return;
     }
@@ -962,6 +1265,7 @@ function connectGateway() {
           for (const guild of packet.d.guilds ?? []) {
             void registerSlashCommands(guild.id).catch(() => undefined);
             void ensureGuildPanels(guild.id).catch((error) => logger.warn({ err: error, guildId: guild.id }, "CredX could not sync automatic panels"));
+            void refreshGuildInvites(guild.id).catch((error) => logger.warn({ err: error, guildId: guild.id }, "CredX could not cache guild invites"));
           }
           void restoreGiveaways().catch((error) => logger.warn({ err: error }, "CredX could not restore active giveaways"));
         } else if (packet.op === 0 && packet.t === "GUILD_CREATE") {
@@ -971,6 +1275,11 @@ function connectGateway() {
           void handleBaitMessage(packet.d).catch(() => undefined);
         } else if (packet.op === 0 && packet.t === "GUILD_MEMBER_ADD") {
           void handleWelcome(packet.d).catch(() => undefined);
+          void trackInviteJoin(packet.d).catch(() => undefined);
+        } else if (packet.op === 0 && packet.t === "GUILD_MEMBER_REMOVE") {
+          void trackInviteLeave(packet.d).catch(() => undefined);
+        } else if (packet.op === 0 && (packet.t === "INVITE_CREATE" || packet.t === "INVITE_DELETE")) {
+          void refreshGuildInvites(packet.d.guild_id).catch(() => undefined);
         } else if (packet.op === 0 && packet.t === "MESSAGE_REACTION_ADD") {
           void handleVerificationReaction(packet.d, true).catch(() => undefined);
         } else if (packet.op === 0 && packet.t === "MESSAGE_REACTION_REMOVE") {

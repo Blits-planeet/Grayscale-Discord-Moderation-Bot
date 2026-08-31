@@ -37,18 +37,19 @@ CredX is a Discord-first moderation bot. Its primary setup is the editable `cred
 - The Discord OAuth connection is used for account-level access, but live bot operations use the project secret `DISCORD_BOT_TOKEN` because Discord does not permit channel and moderation operations with a user OAuth token.
 - Server settings and embed templates are stored as JSON payloads keyed by Discord guild ID so the panel can evolve without losing existing configuration.
 - The anti-nuke bait channel follows the requested three-step escalation: configured first timeout, configured second timeout, then a longer timeout; no mute role is used.
-- Gateway events are enabled for guilds, members, messages, and message content; the bot must be invited with the matching privileged intents enabled in the Discord Developer Portal.
+- Gateway events are enabled for guilds, members, messages, message content, reactions, and invites; the bot must be invited with the matching intents enabled in the Discord Developer Portal.
 - The bot registers slash commands per guild after Gateway READY; no prefix commands are used.
 - Reaction-role verification requires the Guild Message Reactions Gateway intent.
 
 ## Product
 
-- Registers `/ticket`, `/giveaway`, `/ban`, `/kick`, `/mute`, and `/unmute` in every guild the bot joins.
+- Registers `/ticket`, `/giveaway`, `/announcement`, `/annoucement`, `/r`, `/invites`, `/ban`, `/kick`, `/mute`, and `/unmute` in every guild the bot joins.
 - Server IDs, channel IDs, role IDs, welcome settings, ticket settings, and anti-nuke thresholds are configured in `credx.config.json`.
 - The bot's Discord status is configured globally in `credx.config.json` under `bot.status`, `bot.activityType`, and `bot.activity`.
 - CredX automatically posts the ticket embed with categories Purchasing, Giveaway (claim/info), Scam (report), and Support (info) in `tickets.panelChannelId`.
 - CredX automatically posts the reaction-role message in `verification.channelId`; reacting adds the configured `Member` role, removing the reaction removes it, and no role is assigned on join.
-- `/giveaway` accepts a prize, duration in hours, an optional required role, and an optional winner count. Entries use a button, winners are selected randomly, and each winner receives an English DM.
+- `/giveaway` accepts a prize, duration in hours, up to three required roles, account/server age requirements, a claim deadline, and an optional winner count. Entries use a button, winners are selected randomly, winners receive an English DM, and unclaimed winners are automatically rerolled.
+- `/announcement` (with the `/annoucement` compatibility alias) posts a configurable embed. `/r` creates a colored custom role and assigns it to a user. `/invites` counts invite-attributed members who are still in the server.
 - Ticket channels use category prefixes such as `purchasing-name`, `giveaway-name`, `scam-name`, and `support-name`; each ticket has Close, Ping admin, and Claim controls.
 - Claiming updates the ticket embed with the plain admin name while keeping the ticket user's mention in the embed.
 - `mute` and the anti-nuke escalation use Discord timeouts only; no mute role is required.
@@ -56,6 +57,7 @@ CredX is a Discord-first moderation bot. Its primary setup is the editable `cred
 - Saves and sends welcome, rules, announcement, ticket, and anti-nuke embeds.
 - Supports ban, kick, mute, and unmute actions with confirmation-first UI and audit logging.
 - Active giveaways are stored in the database and their timers are restored after a bot restart.
+- The hoster start file is the root `index.js`; it runs `pnpm --filter @workspace/api-server run dev`. The API entrypoint is `artifacts/api-server/src/index.ts`.
 - The background bot listener welcomes new members with the CredX banner, handles verification reactions, enforces the protected bait channel, DMs affected members, purges the bait channel, and creates tickets from `/ticket`.
 
 ## User preferences
@@ -68,6 +70,7 @@ CredX is a Discord-first moderation bot. Its primary setup is the editable `cred
 - The bot must be invited to a server and granted the permissions required by each configured action.
 - The Discord Developer Portal must enable the privileged Server Members Intent and Message Content Intent for the Gateway listener.
 - Enable the Guild Message Reactions intent for the reaction-based Member role.
+- Enable the Guild Invites intent and grant Manage Server if invite tracking and `/invites` are required.
 - The app's upload URL route should be placed behind project access controls before making the panel public.
 
 ## Pointers
