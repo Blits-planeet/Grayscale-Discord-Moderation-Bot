@@ -264,18 +264,20 @@ async function readFileConfig(): Promise<ConfigFile | null> {
 
 export async function readBotPresenceConfig(): Promise<BotPresenceConfig> {
   const fileConfig = await readFileConfig();
-  const presence = {
-    status: fileConfig?.bot?.status ?? "online",
-    activityType: fileConfig?.bot?.activityType ?? "watching",
-    activity: fileConfig?.bot?.activity ?? "CredX moderation",
-  };
-  if (!["online", "idle", "dnd", "invisible"].includes(presence.status)) {
+  const status = String(fileConfig?.bot?.status ?? "online").toLowerCase();
+  const activityType = String(fileConfig?.bot?.activityType ?? "watching").toLowerCase();
+  const activity = String(fileConfig?.bot?.activity ?? "CredX moderation");
+  if (!["online", "idle", "dnd", "invisible"].includes(status)) {
     throw new Error("credx.config.json bot.status must be online, idle, dnd, or invisible");
   }
-  if (!["playing", "streaming", "listening", "watching", "competing"].includes(presence.activityType)) {
+  if (!["playing", "streaming", "listening", "watching", "competing"].includes(activityType)) {
     throw new Error("credx.config.json bot.activityType must be playing, streaming, listening, watching, or competing");
   }
-  return presence;
+  return {
+    status: status as BotPresenceConfig["status"],
+    activityType: activityType as BotPresenceConfig["activityType"],
+    activity,
+  };
 }
 
 export async function saveConfig(guildId: string, config: unknown) {

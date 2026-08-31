@@ -97,16 +97,6 @@ const slashCommands = [
     }],
   },
   {
-    name: "ticketpanel",
-    description: "Post the CredX ticket category panel",
-    default_member_permissions: "32",
-  },
-  {
-    name: "verifypanel",
-    description: "Post the CredX reaction verification message",
-    default_member_permissions: "32",
-  },
-  {
     name: "ban",
     description: "Ban a member from this server",
     default_member_permissions: "32",
@@ -125,31 +115,12 @@ const slashCommands = [
     ],
   },
   {
-    name: "timeout",
-    description: "Timeout a member",
-    default_member_permissions: "32",
-    options: [
-      { name: "user", description: "Member to timeout", type: 6, required: true },
-      { name: "minutes", description: "Timeout duration in minutes", type: 4, required: true, min_value: 1, max_value: 40320 },
-      { name: "reason", description: "Reason for the timeout", type: 3, required: false },
-    ],
-  },
-  {
-    name: "untimeout",
-    description: "Remove a member timeout",
-    default_member_permissions: "32",
-    options: [
-      { name: "user", description: "Member to untimeout", type: 6, required: true },
-      { name: "reason", description: "Reason for the action", type: 3, required: false },
-    ],
-  },
-  {
     name: "mute",
     description: "Timeout a member without using a role",
     default_member_permissions: "32",
     options: [
+      { name: "minutes", description: "Timeout duration in minutes", type: 4, required: true, min_value: 1, max_value: 40320 },
       { name: "user", description: "Member to mute", type: 6, required: true },
-      { name: "minutes", description: "Timeout duration in minutes", type: 4, required: false, min_value: 1, max_value: 40320 },
       { name: "reason", description: "Reason for the mute", type: 3, required: false },
     ],
   },
@@ -442,6 +413,31 @@ async function sendVerificationPanel(channelId: string, emoji: string) {
   return message;
 }
 
+async function hasCredxPanel(channelId: string, title: string): Promise<boolean> {
+  const messages = await discordFetch<Array<{ author?: { id?: string }; embeds?: Array<{ title?: string }> }>>(`/channels/${channelId}/messages?limit=100`);
+  return messages.some((message) => message.author?.id === applicationId && message.embeds?.some((embed) => embed.title === title));
+}
+
+const panelSyncInFlight = new Set<string>();
+
+async function ensureGuildPanels(guildId: string) {
+  if (panelSyncInFlight.has(guildId)) return;
+  panelSyncInFlight.add(guildId);
+  try {
+    const config = await readConfig(guildId);
+    if (config.tickets.enabled && config.tickets.panelChannelId && !await hasCredxPanel(config.tickets.panelChannelId, "CredX support tickets")) {
+      await sendTicketPanel(config.tickets.panelChannelId);
+      logger.info({ guildId, channelId: config.tickets.panelChannelId }, "CredX ticket panel posted automatically");
+    }
+    if (config.verification.enabled && config.verification.channelId && !await hasCredxPanel(config.verification.channelId, "CredX verification")) {
+      await sendVerificationPanel(config.verification.channelId, config.verification.emoji);
+      logger.info({ guildId, channelId: config.verification.channelId }, "CredX verification panel posted automatically");
+    }
+  } finally {
+    panelSyncInFlight.delete(guildId);
+  }
+}
+
 function reactionMatches(reaction: any, configuredEmoji: string): boolean {
   if (reaction?.emoji?.name === configuredEmoji || reaction?.emoji?.id === configuredEmoji) return true;
   const customMatch = configuredEmoji.match(/^<a?:[^:>]+:(\d+)>$/);
@@ -652,15 +648,6 @@ async function executeModerationCommand(interaction: any, action: string) {
       method: "DELETE",
       headers: { "X-Audit-Log-Reason": encodeURIComponent(safeReason) },
     });
-  } else if (action === "timeout" || action === "untimeout") {
-    const until = action === "timeout"
-      ? new Date(Date.now() + Number(durationMinutes) * 60_000).toISOString()
-      : null;
-    await discordFetch(`/guilds/${guildId}/members/${userId}`, {
-      method: "PATCH",
-      headers: { "X-Audit-Log-Reason": encodeURIComponent(safeReason) },
-      body: JSON.stringify({ communication_disabled_until: until }),
-    });
   } else {
     const config = await readConfig(guildId);
     const until = action === "mute"
@@ -704,31 +691,7 @@ async function handleInteraction(interaction: any) {
       return;
     }
 
-    if (command === "ticketpanel") {
-      await deferInteraction(interaction, true);
-      const config = await readConfig(interaction.guild_id);
-      if (!config.tickets.panelChannelId) {
-        await editInteraction(interaction, { content: "Set tickets.panelChannelId in credx.config.json first." });
-        return;
-      }
-      const message = await sendTicketPanel(config.tickets.panelChannelId);
-      await editInteraction(interaction, { content: `Ticket dropdown posted in <#${config.tickets.panelChannelId}>: https://discord.com/channels/${interaction.guild_id}/${config.tickets.panelChannelId}/${message.id}` });
-      return;
-    }
-
-    if (command === "verifypanel") {
-      await deferInteraction(interaction, true);
-      const config = await readConfig(interaction.guild_id);
-      if (!config.verification.enabled || !config.verification.channelId) {
-        await editInteraction(interaction, { content: "Set verification.channelId in credx.config.json first." });
-        return;
-      }
-      const message = await sendVerificationPanel(config.verification.channelId, config.verification.emoji);
-      await editInteraction(interaction, { content: `Verification message posted in <#${config.verification.channelId}>: https://discord.com/channels/${interaction.guild_id}/${config.verification.channelId}/${message.id}` });
-      return;
-    }
-
-    if (["ban", "kick", "timeout", "untimeout", "mute", "unmute"].includes(command)) {
+    if (["ban", "kick", "mute", "unmute"].includes(command)) {
       await deferInteraction(interaction, true);
       try {
         await editInteraction(interaction, { content: await executeModerationCommand(interaction, command) });
@@ -782,9 +745,11 @@ function connectGateway() {
           void ensureBotName(packet.d.user.username).catch(() => undefined);
           for (const guild of packet.d.guilds ?? []) {
             void registerSlashCommands(guild.id).catch(() => undefined);
+            void ensureGuildPanels(guild.id).catch((error) => logger.warn({ err: error, guildId: guild.id }, "CredX could not sync automatic panels"));
           }
         } else if (packet.op === 0 && packet.t === "GUILD_CREATE") {
           void registerSlashCommands(packet.d.id).catch(() => undefined);
+          void ensureGuildPanels(packet.d.id).catch((error) => logger.warn({ err: error, guildId: packet.d.id }, "CredX could not sync automatic panels"));
         } else if (packet.op === 0 && packet.t === "MESSAGE_CREATE") {
           void handleBaitMessage(packet.d).catch(() => undefined);
         } else if (packet.op === 0 && packet.t === "GUILD_MEMBER_ADD") {

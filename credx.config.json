@@ -1,21 +1,21 @@
 {
   "bot": {
-    "status": "online",
-    "activityType": "watching",
-    "activity": "CredX moderation"
+    "status": "idle",
+    "activityType": "Watching",
+    "activity": ".gg/CredX"
   },
   "defaults": {
     "moderation": {
-      "logChannelId": null,
+      "logChannelId": "1543751824039874650",
       "mutedRoleId": null,
-      "memberRoleId": null,
+      "memberRoleId": "1543732742276259904",
       "defaultTimeoutHours": 5,
       "dmUsers": true,
       "deleteCommandMessages": true
     },
     "welcome": {
       "enabled": true,
-      "channelId": null,
+      "channelId": "1543732743148408884",
       "message": "Welcome {user} to {server}.",
       "imagePath": null,
       "imageName": "credx-welcome-banner.png",
@@ -23,19 +23,20 @@
     },
     "tickets": {
       "enabled": true,
-      "categoryId": null,
-      "panelChannelId": null,
-      "supportRoleId": null,
-      "transcriptChannelId": null
+      "categoryId": "1543732743454859298",
+      "panelChannelId": "1543732743148408890",
+      "supportRoleId": "1543732742699614210",
+      "transcriptChannelId": "1543751582657814658"
     },
     "verification": {
       "enabled": true,
-      "channelId": null,
+      "channelId": "1543749680251535491",
       "emoji": "✅"
     },
     "antiNuke": {
-      "enabled": false,
-      "baitChannelId": null,
+      "enabled": true,
+      "baitChannelId":
+      "1543738300936753253",
       "firstTimeoutHours": 5,
       "secondTimeoutDays": 5,
       "thirdTimeoutDays": 30,
